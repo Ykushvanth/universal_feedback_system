@@ -54,16 +54,34 @@ class FormModel {
     }
 
     /**
-     * Merge general_details_config back into settings.general_detail_fields
+     * Safely parse a value that may be a JSON string or already an object/array.
+     */
+    static _parseJsonField(val, fallback = null) {
+        if (val === null || val === undefined) return fallback;
+        if (typeof val === 'string') {
+            try { return JSON.parse(val); } catch { return fallback; }
+        }
+        return val;
+    }
+
+    /**
+     * Merge general_details_config back into settings.general_detail_fields.
+     * Also safely parses any fields that Supabase may return as JSON strings
+     * (happens when columns are TEXT instead of JSONB).
      */
     static _withGeneralDetails(form) {
         if (!form) return form;
+        const settings             = this._parseJsonField(form.settings, {});
+        const generalDetailsConfig = this._parseJsonField(form.general_details_config, { fields: [] });
+        const sections             = this._parseJsonField(form.sections, []);
         return {
             ...form,
+            sections,
             settings: {
-                ...form.settings,
-                general_detail_fields: form.general_details_config?.fields || []
-            }
+                ...settings,
+                general_detail_fields: generalDetailsConfig.fields || []
+            },
+            general_details_config: generalDetailsConfig
         };
     }
 
@@ -202,6 +220,11 @@ class FormModel {
 
             // Create duplicate with new ID
             const newFormId = generateFormId();
+
+            // Strip general_detail_fields from settings (stored separately in general_details_config)
+            const cleanSettings = { ...originalForm.settings };
+            delete cleanSettings.general_detail_fields;
+
             const { data, error } = await supabase
                 .from('forms')
                 .insert([{
@@ -209,7 +232,7 @@ class FormModel {
                     title: `${originalForm.title} (Copy)`,
                     description: originalForm.description,
                     sections: originalForm.sections,
-                    settings: originalForm.settings,
+                    settings: cleanSettings,
                     general_details_config: originalForm.general_details_config,
                     created_by: userId,
                     is_active: false,

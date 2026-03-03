@@ -45,14 +45,8 @@ async function startServer() {
             server.close(async () => {
                 logger.info('HTTP server closed');
                 
-                // Close database connection
-                try {
-                    const db = require('./src/config/database');
-                    await db.pool.end();
-                    logger.info('Database connection closed');
-                } catch (error) {
-                    logger.error('Error closing database:', error);
-                }
+                // Supabase uses HTTP connections - no pool to close explicitly
+                logger.info('Database connections released (Supabase HTTP client)');
                 
                 logger.info('Graceful shutdown completed');
                 process.exit(0);

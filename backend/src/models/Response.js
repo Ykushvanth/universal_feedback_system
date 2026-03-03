@@ -9,6 +9,29 @@ const { generateResponseId } = require('../utils/helpers');
 
 class ResponseModel {
     /**
+     * Safely parse a value that may be a JSON string or already an object/array.
+     */
+    static _parseJsonField(val, fallback = null) {
+        if (val === null || val === undefined) return fallback;
+        if (typeof val === 'string') {
+            try { return JSON.parse(val); } catch { return fallback; }
+        }
+        return val;
+    }
+
+    /**
+     * Normalise a response row — parse any JSON string fields.
+     */
+    static _parseResponse(row) {
+        if (!row) return row;
+        return {
+            ...row,
+            general_details: this._parseJsonField(row.general_details, {}),
+            answers:         this._parseJsonField(row.answers, [])
+        };
+    }
+
+    /**
      * Create new response
      */
     static async create(responseData) {
@@ -35,7 +58,7 @@ class ResponseModel {
                 await this.storeEmail(responseData.form_id, responseData.general_details.email);
             }
 
-            return data;
+            return this._parseResponse(data);
         } catch (error) {
             logger.error('Error creating response:', error);
             throw error;
@@ -103,7 +126,7 @@ class ResponseModel {
                 throw error;
             }
 
-            return data;
+            return this._parseResponse(data);
         } catch (error) {
             logger.error('Error finding response by ID:', error);
             throw error;
@@ -143,7 +166,7 @@ class ResponseModel {
                 throw error;
             }
 
-            return data;
+            return (data || []).map(row => this._parseResponse(row));
         } catch (error) {
             logger.error('Error getting responses by form ID:', error);
             throw error;

@@ -107,10 +107,12 @@ const FormResponses = () => {
     const exportCSV = () => {
         if (responses.length === 0) { toast.error('No responses to export'); return; }
         const generalKeys = filterFields.map(f => f.name);
-        const headerRow   = ['#', 'Submitted At', ...filterFields.map(f => f.label)];
+        const headerRow   = ['#', 'Submitted At', 'Name', 'Email', ...filterFields.map(f => f.label)];
         const rows = responses.map((r, i) => [
             i + 1,
             fmtDate(r.submitted_at),
+            `"${(r.general_details?.name || r.general_details?.full_name || '').toString().replace(/"/g, '""')}"`,
+            `"${(r.general_details?.email || '').toString().replace(/"/g, '""')}"`,
             ...generalKeys.map(k => `"${(r.general_details?.[k] || '').toString().replace(/"/g, '""')}"`),
         ]);
         const csv  = [headerRow.join(','), ...rows.map(row => row.join(','))].join('\n');
@@ -416,21 +418,25 @@ const FormResponses = () => {
 
                                     {isOpen && (
                                         <div className="fr-card-body">
-                                            {filterFields.length > 0 && (
-                                                <div className="fr-details-section">
-                                                    <h4 className="fr-details-heading">Respondent Details</h4>
-                                                    <div className="fr-details-grid">
-                                                        {filterFields.map(f => (
-                                                            <div key={f.name} className="fr-detail-row">
-                                                                <span className="fr-detail-key">{f.label}</span>
-                                                                <span className="fr-detail-val">{details[f.name] || '—'}</span>
-                                                            </div>
-                                                        ))}
+                                            <div className="fr-details-section">
+                                                <h4 className="fr-details-heading">Respondent Details</h4>
+                                                <div className="fr-details-grid">
+                                                    <div className="fr-detail-row">
+                                                        <span className="fr-detail-key">Name</span>
+                                                        <span className="fr-detail-val">{details.name || details.full_name || '—'}</span>
                                                     </div>
+                                                    <div className="fr-detail-row">
+                                                        <span className="fr-detail-key">Email</span>
+                                                        <span className="fr-detail-val">{details.email || '—'}</span>
+                                                    </div>
+                                                    {filterFields.map(f => (
+                                                        <div key={f.name} className="fr-detail-row">
+                                                            <span className="fr-detail-key">{f.label}</span>
+                                                            <span className="fr-detail-val">{details[f.name] || '—'}</span>
+                                                        </div>
+                                                    ))}
                                                 </div>
-                                            )}
-
-                                            {answers.length > 0 && (
+                                            </div>
                                                 <div className="fr-answers-section">
                                                     <h4 className="fr-details-heading">Answers</h4>
                                                     {(form?.sections || []).map(sec => {
@@ -451,9 +457,9 @@ const FormResponses = () => {
                                                                                     {q?.text || ans.question_id}
                                                                                 </div>
                                                                                 <div className="fr-answer-a">
-                                                                                    {Array.isArray(ans.answer)
-                                                                                        ? ans.answer.join(', ')
-                                                                                        : (ans.answer ?? '—')}
+                                                                                    {Array.isArray(ans.value)
+                                                                                        ? ans.value.join(', ')
+                                                                                        : (ans.value ?? '—')}
                                                                                 </div>
                                                                             </div>
                                                                         );
