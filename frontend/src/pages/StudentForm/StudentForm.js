@@ -8,6 +8,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import formService from '../../services/formService';
 import responseService from '../../services/responseService';
+import SearchableDropdown from '../../components/SearchableDropdown/SearchableDropdown';
 import './StudentForm.css';
 
 const StudentForm = () => {
@@ -342,9 +343,21 @@ const StudentForm = () => {
                                     name="email"
                                     value={generalDetails.email}
                                     onChange={handleGeneralDetailChange}
-                                    placeholder="Enter your email"
+                                    placeholder={
+                                        form.settings?.restrict_domain && form.settings?.allowed_domain
+                                            ? `Enter your ${Array.isArray(form.settings.allowed_domain) ? form.settings.allowed_domain[0] : form.settings.allowed_domain} email`
+                                            : 'Enter your email'
+                                    }
                                     required
                                 />
+                                {form.settings?.restrict_domain && form.settings?.allowed_domain && (
+                                    <p className="sf-email-hint">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{marginRight: '5px', flexShrink: 0}}>
+                                            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                                        </svg>
+                                        Use your college email ending with <strong>@{Array.isArray(form.settings.allowed_domain) ? form.settings.allowed_domain.join(' or @') : form.settings.allowed_domain}</strong>
+                                    </p>
+                                )}
                             </div>
 
                             {/* Dynamic General Detail Fields */}
@@ -373,18 +386,16 @@ const StudentForm = () => {
                                         
                                         {/* Simple Dropdown */}
                                         {field.type === 'dropdown' && field.options && field.options.length > 0 && (
-                                            <select
-                                                name={field.name}
+                                            <SearchableDropdown
+                                                options={field.options}
                                                 value={generalDetails[field.name] || ''}
-                                                onChange={handleGeneralDetailChange}
-                                                className="input-select"
+                                                onChange={(val) => {
+                                                    const e = { target: { name: field.name, value: val } };
+                                                    handleGeneralDetailChange(e);
+                                                }}
+                                                placeholder={`Select ${field.label}`}
                                                 required={field.required}
-                                            >
-                                                <option value="">Select {field.label}</option>
-                                                {field.options.map((option, optIndex) => (
-                                                    <option key={optIndex} value={option}>{option}</option>
-                                                ))}
-                                            </select>
+                                            />
                                         )}
                                         
                                         {/* Radio Buttons (Single Choice) */}
@@ -430,39 +441,29 @@ const StudentForm = () => {
                                             <>
                                                 {/* Show parent options first if no parent_field */}
                                                 {!field.parent_field && field.options && field.options.length > 0 && (
-                                                    <select
-                                                        name={field.name}
+                                                    <SearchableDropdown
+                                                        options={field.options}
                                                         value={generalDetails[field.name] || ''}
-                                                        onChange={(e) => handleCascadingFieldChange(field, e.target.value)}
-                                                        className="input-select"
+                                                        onChange={(val) => handleCascadingFieldChange(field, val)}
+                                                        placeholder={`Select ${field.label}`}
                                                         required={field.required}
-                                                    >
-                                                        <option value="">Select {field.label}</option>
-                                                        {field.options.map((option, optIndex) => (
-                                                            <option key={optIndex} value={option}>{option}</option>
-                                                        ))}
-                                                    </select>
+                                                    />
                                                 )}
                                                 
                                                 {/* Show cascading options if has parent_field */}
                                                 {field.parent_field && (
-                                                    <select
-                                                        name={field.name}
+                                                    <SearchableDropdown
+                                                        options={getCascadingOptions(field)}
                                                         value={generalDetails[field.name] || ''}
-                                                        onChange={(e) => handleCascadingFieldChange(field, e.target.value)}
-                                                        className="input-select"
-                                                        required={field.required}
+                                                        onChange={(val) => handleCascadingFieldChange(field, val)}
+                                                        placeholder={
+                                                            generalDetails[field.parent_field]
+                                                                ? `Select ${field.label}`
+                                                                : `Select ${field.parent_field} first`
+                                                        }
                                                         disabled={!generalDetails[field.parent_field]}
-                                                    >
-                                                        <option value="">
-                                                            {generalDetails[field.parent_field] 
-                                                                ? `Select ${field.label}` 
-                                                                : `Select ${field.parent_field} first`}
-                                                        </option>
-                                                        {getCascadingOptions(field).map((option, optIndex) => (
-                                                            <option key={optIndex} value={option}>{option}</option>
-                                                        ))}
-                                                    </select>
+                                                        required={field.required}
+                                                    />
                                                 )}
                                             </>
                                         )}

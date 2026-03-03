@@ -6,6 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
+import * as XLSX from 'xlsx';
 import formService from '../../services/formService';
 import responseService from '../../services/responseService';
 import './FormResponses.css';
@@ -104,24 +105,51 @@ const FormResponses = () => {
 
     const clearFilters = () => setFilters({});
 
-    const exportCSV = () => {
+    const exportExcel = () => {
         if (responses.length === 0) { toast.error('No responses to export'); return; }
-        const generalKeys = filterFields.map(f => f.name);
-        const headerRow   = ['#', 'Submitted At', 'Name', 'Email', ...filterFields.map(f => f.label)];
-        const rows = responses.map((r, i) => [
-            i + 1,
-            fmtDate(r.submitted_at),
-            `"${(r.general_details?.name || r.general_details?.full_name || '').toString().replace(/"/g, '""')}"`,
-            `"${(r.general_details?.email || '').toString().replace(/"/g, '""')}"`,
-            ...generalKeys.map(k => `"${(r.general_details?.[k] || '').toString().replace(/"/g, '""')}"`),
-        ]);
-        const csv  = [headerRow.join(','), ...rows.map(row => row.join(','))].join('\n');
-        const blob = new Blob([csv], { type: 'text/csv' });
-        const url  = URL.createObjectURL(blob);
-        const a    = document.createElement('a');
-        a.href = url; a.download = `responses_${formId}_${Date.now()}.csv`; a.click();
-        URL.revokeObjectURL(url);
-        toast.success('Exported successfully');
+
+        // Build ordered question list from all sections
+        const allQuestions = [];
+        (form?.sections || []).forEach(sec => {
+            (sec.questions || []).forEach(q => {
+                allQuestions.push({ id: q.id, text: q.text || q.id, sectionTitle: sec.title });
+            });
+        });
+
+        // Header: S.No, Submitted At, Name, Email, extra detail fields, then one col per question
+        const headers = [
+            'S.No', 'Submitted At', 'Name', 'Email',
+            ...filterFields.map(f => f.label),
+            ...allQuestions.map(q => `[${q.sectionTitle}] ${q.text}`)
+        ];
+
+        // Data rows
+        const dataRows = responses.map((r, i) => {
+            const details = r.general_details || {};
+            const answers = r.answers || [];
+            const getAnswer = (questionId) => {
+                const ans = answers.find(a => a.question_id === questionId);
+                if (!ans) return '';
+                if (Array.isArray(ans.value)) return ans.value.join(', ');
+                return ans.value ?? '';
+            };
+            return [
+                i + 1,
+                r.submitted_at ? new Date(r.submitted_at).toLocaleString('en-IN') : '',
+                details.name || details.full_name || '',
+                details.email || '',
+                ...filterFields.map(f => details[f.name] || ''),
+                ...allQuestions.map(q => getAnswer(q.id))
+            ];
+        });
+
+        // Build worksheet and download
+        const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
+        ws['!cols'] = headers.map(h => ({ wch: Math.max(h.toString().length + 2, 18) }));
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Responses');
+        XLSX.writeFile(wb, `responses_${form?.title || formId}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+        toast.success(`Exported ${responses.length} responses to Excel`);
     };
 
     const toggle = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
@@ -251,13 +279,13 @@ const FormResponses = () => {
                             </svg>
                             View Analysis
                         </button>
-                        <button className="fr-btn primary" onClick={exportCSV}>
+                        <button className="fr-btn primary" onClick={exportExcel}>
                             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                                 <polyline points="7 10 12 15 17 10"/>
                                 <line x1="12" y1="15" x2="12" y2="3"/>
                             </svg>
-                            Export CSV
+                            Export Excel
                         </button>
                         <button className="fr-btn back" onClick={() => navigate('/dashboard')}>
                             &#8592; Dashboard
