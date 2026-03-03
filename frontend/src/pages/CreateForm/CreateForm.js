@@ -28,6 +28,23 @@ const CreateForm = () => {
     });
 
     const [loading, setLoading] = useState(false);
+    const [editingOption, setEditingOption] = useState(null);
+    // editingOption: { key: 'fieldIndex_optionValue' | 'fieldIndex_parentValue_childValue', value: string }
+
+    const startEditOption = (key, currentValue) => {
+        setEditingOption({ key, value: currentValue });
+    };
+
+    const commitEditOption = (fieldIndex, oldOption, parentValue = null) => {
+        if (!editingOption) return;
+        if (parentValue !== null) {
+            renameCascadeChildOption(fieldIndex, parentValue, oldOption, editingOption.value);
+        } else {
+            renameDropdownOption(fieldIndex, oldOption, editingOption.value);
+        }
+        setEditingOption(null);
+    };
+
     const [bulkInputs, setBulkInputs] = useState({});
 
     const setBulkInput = (key, value) => {
@@ -101,6 +118,20 @@ const CreateForm = () => {
         setFormData(prev => ({
             ...prev,
             sections: prev.sections.filter(section => section.id !== sectionId)
+        }));
+    };
+
+    const toggleSectionScoring = (sectionId) => {
+        setFormData(prev => ({
+            ...prev,
+            sections: prev.sections.map(section => {
+                if (section.id !== sectionId) return section;
+                const enabling = !section.scoring_enabled;
+                const updatedQuestions = enabling
+                    ? section.questions
+                    : section.questions.map(q => ({ ...q, option_scores: {} }));
+                return { ...section, scoring_enabled: enabling, questions: updatedQuestions };
+            })
         }));
     };
 
@@ -276,6 +307,19 @@ const CreateForm = () => {
         }));
     };
 
+    const moveGeneralDetailField = (index, direction) => {
+        setFormData(prev => {
+            const fields = [...prev.settings.general_detail_fields];
+            const targetIndex = index + direction;
+            if (targetIndex < 0 || targetIndex >= fields.length) return prev;
+            [fields[index], fields[targetIndex]] = [fields[targetIndex], fields[index]];
+            return {
+                ...prev,
+                settings: { ...prev.settings, general_detail_fields: fields }
+            };
+        });
+    };
+
     const addBulkFieldOptions = (fieldIndex) => {
         const key = `field_${fieldIndex}`;
         const inputVal = (bulkInputs[key] || '').trim();
@@ -313,10 +357,8 @@ const CreateForm = () => {
                     if (i === fieldIndex) {
                         const newCascadingOptions = { ...field.cascading_options };
                         delete newCascadingOptions[option];
-                        
                         const newOptionScores = { ...field.option_scores };
                         delete newOptionScores[option];
-                        
                         return {
                             ...field,
                             options: field.options.filter(o => o !== option),
@@ -325,6 +367,54 @@ const CreateForm = () => {
                         };
                     }
                     return field;
+                })
+            }
+        }));
+    };
+
+    // Rename a parent option — preserves all cascading children under the new key
+    const renameDropdownOption = (fieldIndex, oldOption, newOption) => {
+        const trimmed = newOption.trim();
+        if (!trimmed || trimmed === oldOption) return;
+        setFormData(prev => ({
+            ...prev,
+            settings: {
+                ...prev.settings,
+                general_detail_fields: prev.settings.general_detail_fields.map((field, i) => {
+                    if (i !== fieldIndex) return field;
+                    // Replace option in options array
+                    const newOptions = field.options.map(o => o === oldOption ? trimmed : o);
+                    // Rename key in option_scores
+                    const newScores = {};
+                    Object.entries(field.option_scores || {}).forEach(([k, v]) => {
+                        newScores[k === oldOption ? trimmed : k] = v;
+                    });
+                    // Rename key in cascading_options (preserves children!)
+                    const newCascading = {};
+                    Object.entries(field.cascading_options || {}).forEach(([k, v]) => {
+                        newCascading[k === oldOption ? trimmed : k] = v;
+                    });
+                    return { ...field, options: newOptions, option_scores: newScores, cascading_options: newCascading };
+                })
+            }
+        }));
+    };
+
+    // Rename a cascading child option
+    const renameCascadeChildOption = (fieldIndex, parentValue, oldChild, newChild) => {
+        const trimmed = newChild.trim();
+        if (!trimmed || trimmed === oldChild) return;
+        setFormData(prev => ({
+            ...prev,
+            settings: {
+                ...prev.settings,
+                general_detail_fields: prev.settings.general_detail_fields.map((field, i) => {
+                    if (i !== fieldIndex) return field;
+                    const children = (field.cascading_options[parentValue] || []).map(o => o === oldChild ? trimmed : o);
+                    return {
+                        ...field,
+                        cascading_options: { ...field.cascading_options, [parentValue]: children }
+                    };
                 })
             }
         }));
@@ -715,6 +805,23 @@ const CreateForm = () => {
                         {formData.settings.general_detail_fields.map((field, index) => (
                             <div key={field.id} className="custom-field-item" style={{ display: 'block', padding: '16px', marginBottom: '12px', border: '1px solid #e5e7eb', borderRadius: '8px', background: '#f9fafb' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                                    {/* Reorder buttons */}
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 }}>
+                                        <button
+                                            type="button"
+                                            onClick={() => moveGeneralDetailField(index, -1)}
+                                            disabled={index === 0}
+                                            title="Move up"
+                                            style={{ background: index === 0 ? '#e5e7eb' : '#667eea', color: index === 0 ? '#9ca3af' : '#fff', border: 'none', borderRadius: '4px', width: '22px', height: '20px', cursor: index === 0 ? 'not-allowed' : 'pointer', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}
+                                        >▲</button>
+                                        <button
+                                            type="button"
+                                            onClick={() => moveGeneralDetailField(index, 1)}
+                                            disabled={index === formData.settings.general_detail_fields.length - 1}
+                                            title="Move down"
+                                            style={{ background: index === formData.settings.general_detail_fields.length - 1 ? '#e5e7eb' : '#667eea', color: index === formData.settings.general_detail_fields.length - 1 ? '#9ca3af' : '#fff', border: 'none', borderRadius: '4px', width: '22px', height: '20px', cursor: index === formData.settings.general_detail_fields.length - 1 ? 'not-allowed' : 'pointer', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}
+                                        >▼</button>
+                                    </div>
                                     <input
                                         type="text"
                                         value={field.label}
@@ -796,18 +903,32 @@ const CreateForm = () => {
                                         {!field.scoring_enabled ? (
                                             <>
                                                 <div className="options-tags-container" style={{ marginBottom: '8px' }}>
-                                                    {field.options.map((option, optIndex) => (
-                                                        <span key={optIndex} className="option-tag">
-                                                            {option}
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => removeDropdownOption(index, option)}
-                                                                className="tag-remove"
-                                                            >
-                                                                ×
-                                                            </button>
-                                                        </span>
-                                                    ))}
+                                                    {field.options.map((option, optIndex) => {
+                                                        const eKey = `${index}_${option}`;
+                                                        const isEditing = editingOption?.key === eKey;
+                                                        return isEditing ? (
+                                                            <span key={optIndex} className="option-tag" style={{ background: '#ede9fe', padding: '2px 4px' }}>
+                                                                <input
+                                                                    autoFocus
+                                                                    type="text"
+                                                                    value={editingOption.value}
+                                                                    onChange={e => setEditingOption({ key: eKey, value: e.target.value })}
+                                                                    onKeyDown={e => {
+                                                                        if (e.key === 'Enter') { e.preventDefault(); commitEditOption(index, option); }
+                                                                        if (e.key === 'Escape') setEditingOption(null);
+                                                                    }}
+                                                                    onBlur={() => commitEditOption(index, option)}
+                                                                    style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: '13px', width: Math.max(60, editingOption.value.length * 8) + 'px', color: '#4f46e5' }}
+                                                                />
+                                                            </span>
+                                                        ) : (
+                                                            <span key={optIndex} className="option-tag">
+                                                                {option}
+                                                                <button type="button" title="Edit" onClick={() => startEditOption(eKey, option)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: '0 3px', marginLeft: '2px', display: 'inline-flex', alignItems: 'center', lineHeight: 1 }}><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+                                                                <button type="button" onClick={() => removeDropdownOption(index, option)} className="tag-remove">×</button>
+                                                            </span>
+                                                        );
+                                                    })}
                                                 </div>
                                                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px' }}>
                                                     <input
@@ -894,18 +1015,32 @@ const CreateForm = () => {
                                                                 Options for "<strong>{parentOption}</strong>":
                                                             </label>
                                                             <div className="options-tags-container" style={{ marginBottom: '6px' }}>
-                                                                {(field.cascading_options[parentOption] || []).map((childOption, cIndex) => (
-                                                                    <span key={cIndex} className="option-tag" style={{ fontSize: '12px' }}>
-                                                                        {childOption}
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => removeCascadingChildOption(index, parentOption, childOption)}
-                                                                            className="tag-remove"
-                                                                        >
-                                                                            ×
-                                                                        </button>
-                                                                    </span>
-                                                                ))}
+                                                                {(field.cascading_options[parentOption] || []).map((childOption, cIndex) => {
+                                                                    const eKey = `${index}_${parentOption}_${childOption}`;
+                                                                    const isEditing = editingOption?.key === eKey;
+                                                                    return isEditing ? (
+                                                                        <span key={cIndex} className="option-tag" style={{ background: '#ede9fe', padding: '2px 4px', fontSize: '12px' }}>
+                                                                            <input
+                                                                                autoFocus
+                                                                                type="text"
+                                                                                value={editingOption.value}
+                                                                                onChange={e => setEditingOption({ key: eKey, value: e.target.value })}
+                                                                                onKeyDown={e => {
+                                                                                    if (e.key === 'Enter') { e.preventDefault(); commitEditOption(index, childOption, parentOption); }
+                                                                                    if (e.key === 'Escape') setEditingOption(null);
+                                                                                }}
+                                                                                onBlur={() => commitEditOption(index, childOption, parentOption)}
+                                                                                style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: '12px', width: Math.max(50, editingOption.value.length * 8) + 'px', color: '#4f46e5' }}
+                                                                            />
+                                                                        </span>
+                                                                    ) : (
+                                                                        <span key={cIndex} className="option-tag" style={{ fontSize: '12px' }}>
+                                                                            {childOption}
+                                                                            <button type="button" title="Edit" onClick={() => startEditOption(eKey, childOption)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: '0 3px', marginLeft: '2px', display: 'inline-flex', alignItems: 'center', lineHeight: 1 }}><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+                                                                            <button type="button" onClick={() => removeCascadingChildOption(index, parentOption, childOption)} className="tag-remove">×</button>
+                                                                        </span>
+                                                                    );
+                                                                })}
                                                             </div>
                                                         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px' }}>
                                                             <input
@@ -975,6 +1110,29 @@ const CreateForm = () => {
                                     }}>
                                         {section.scoring_enabled ? '📊 Scoring Section' : '📝 Non-Scoring Section'}
                                     </span>
+                                    <button
+                                        type="button"
+                                        title={section.scoring_enabled ? 'Switch to Non-Scoring' : 'Switch to Scoring'}
+                                        onClick={() => {
+                                            if (section.scoring_enabled && section.questions.some(q => Object.keys(q.option_scores || {}).length > 0)) {
+                                                if (!window.confirm('Switching to Non-Scoring will clear all option scores in this section. Continue?')) return;
+                                            }
+                                            toggleSectionScoring(section.id);
+                                        }}
+                                        style={{
+                                            fontSize: '11px',
+                                            padding: '4px 10px',
+                                            borderRadius: '12px',
+                                            fontWeight: '600',
+                                            border: '1.5px solid',
+                                            cursor: 'pointer',
+                                            background: 'transparent',
+                                            borderColor: section.scoring_enabled ? '#059669' : '#0284c7',
+                                            color: section.scoring_enabled ? '#059669' : '#0284c7',
+                                        }}
+                                    >
+                                        {section.scoring_enabled ? '→ Non-Scoring' : '→ Scoring'}
+                                    </button>
                                 </div>
                                 <button
                                     onClick={() => deleteSection(section.id)}
