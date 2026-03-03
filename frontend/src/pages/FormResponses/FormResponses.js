@@ -469,7 +469,6 @@ const FormResponses = () => {
                                                         );
                                                     })}
                                                 </div>
-                                            )}
 
                                             <div className="fr-card-actions">
                                                 <button

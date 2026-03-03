@@ -245,6 +245,10 @@ const CreateForm = () => {
                 general_detail_fields: prev.settings.general_detail_fields.map((detailField, i) => {
                     if (i === index) {
                         const updated = { ...detailField, [field]: value };
+                        // Keep name in sync with label internally (not shown in UI)
+                        if (field === 'label') {
+                            updated.name = value.trim();
+                        }
                         // Reset cascading options if type changes
                         if (field === 'type' && value !== 'cascading') {
                             updated.parent_field = null;
@@ -413,9 +417,13 @@ const CreateForm = () => {
         setLoading(true);
 
         try {
-            // Strip out incomplete general_detail_fields (missing name or label)
+            // Auto-fill name from label if name is empty, then drop fields with no label
             const cleanedGeneralDetailFields = (formData.settings?.general_detail_fields || [])
-                .filter(f => f.label?.trim() && f.name?.trim());
+                .filter(f => f.label?.trim())
+                .map(f => ({
+                    ...f,
+                    name: f.name?.trim() ? f.name.trim() : f.label.trim()
+                }));
 
             const dataToSubmit = {
                 title: formData.title,
@@ -709,17 +717,9 @@ const CreateForm = () => {
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
                                     <input
                                         type="text"
-                                        value={field.name}
-                                        onChange={(e) => updateGeneralDetailField(index, 'name', e.target.value)}
-                                        placeholder="Field Name (e.g., degree, country)"
-                                        className="input-text"
-                                        style={{ flex: 1 }}
-                                    />
-                                    <input
-                                        type="text"
                                         value={field.label}
                                         onChange={(e) => updateGeneralDetailField(index, 'label', e.target.value)}
-                                        placeholder="Field Label (e.g., Your Degree)"
+                                        placeholder="Field Label (e.g., Department, Roll Number)"
                                         className="input-text"
                                         style={{ flex: 1 }}
                                     />
