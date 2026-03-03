@@ -1,0 +1,340 @@
+/**
+ * AI Service
+ * Integration with Hugging Face API for sentiment analysis
+ */
+
+const axios = require('axios');
+const { logger } = require('../utils/logger');
+const config = require('../config/env');
+
+// Default neutral result returned whenever AI analysis cannot be completed
+const neutralResult = () => ({
+    sentiment: 'neutral',
+    confidence: 0,
+    vader_score: 0,
+    roberta_scores: { negative: 0, neutral: 1, positive: 0 },
+    pattern_matched: false,
+    pattern_type: null,
+    ai_analyzed: false          // flag so callers know this is a fallback
+});
+
+class AIService {
+    /**
+     * Call Hugging Face sentiment analysis API.
+     *
+     * API contract (kushvanth-iqac-fast-api):
+     *   POST /analyze-comments
+     *   Request : { comments: string[], faculty_info: { faculty_name, staff_id, course_code, course_name } }
+     *   Response: { success: bool, analysis: { negative_comments_list: string[],
+     *               overall_sentiment, positive_comments, negative_comments,
+     *               neutral_comments, positive_sentiment, negative_sentiment,
+     *               neutral_sentiment, ... } }
+     *
+     * NEVER throws — always returns an array of per-text results (or neutral fallbacks).
+     */
+    static async analyzeSentiment(texts) {
+        // ── 1. Normalise input ──────────────────────────────────────────────
+        if (!Array.isArray(texts)) texts = [texts];
+        const originalTexts = [...texts];
+
+        const validEntries = originalTexts
+            .map((text, idx) => ({ text, idx }))
+            .filter(({ text }) => text && String(text).trim().length > 0);
+
+        if (validEntries.length === 0) {
+            logger.info('AI Service: no valid texts to analyse, skipping HF call');
+            return originalTexts.map(neutralResult);
+        }
+
+        // ── 2. Configuration checks ─────────────────────────────────────────
+        const apiUrl = config.ai?.apiUrl;
+
+        if (!apiUrl ||
+            apiUrl.includes('your-huggingface-space') ||
+            apiUrl.includes('YOUR_HUGGING_FACE')) {
+            logger.warn('AI Service: AI_ANALYSIS_API_URL is not configured. Returning neutral defaults.');
+            return originalTexts.map(neutralResult);
+        }
+
+        if (config.ai?.enabled === false) {
+            logger.info('AI Service: AI analysis is disabled via config. Returning neutral defaults.');
+            return originalTexts.map(neutralResult);
+        }
+
+        const validTexts = validEntries.map(e => e.text.trim());
+
+        // ── 3. Call HF Space with retry for cold-start ──────────────────────
+        const timeout  = config.ai?.timeout || 90000; // HF Spaces can take ~30s to wake
+        const maxRetry = 2;
+        let lastError  = null;
+
+        for (let attempt = 1; attempt <= maxRetry; attempt++) {
+            try {
+                logger.info(`AI Service: calling HF API (attempt ${attempt}/${maxRetry}) with ${validTexts.length} comment(s)`);
+
+                const response = await axios.post(
+                    apiUrl,
+                    {
+                        comments: validTexts,
+                        faculty_info: {
+                            faculty_name: 'Feedback Analysis',
+                            staff_id:     'N/A',
+                            course_code:  'GEN',
+                            course_name:  'General Feedback'
+                        }
+                    },
+                    { timeout, headers: { 'Content-Type': 'application/json' } }
+                );
+
+                // ── 4. Validate response ────────────────────────────────────
+                const apiData = response?.data;
+                if (!apiData?.success || !apiData?.analysis) {
+                    logger.warn('AI Service: unexpected response from HF API:', JSON.stringify(apiData));
+                    break;
+                }
+
+                const analysis = apiData.analysis;
+
+                // Build O(1) lookup of which texts the API flagged as negative
+                const negativeSet = new Set(
+                    (analysis.negative_comments_list || []).map(t => t.trim())
+                );
+
+                // Infer what non-negatives are: positive if pos > neutral, else neutral
+                const posCount = analysis.positive_comments  || 0;
+                const neuCount = analysis.neutral_comments   || 0;
+                const nonNegSentiment = posCount >= neuCount ? 'positive' : 'neutral';
+                const nonNegConfidence = posCount >= neuCount
+                    ? (analysis.positive_sentiment || 0.7)
+                    : (analysis.neutral_sentiment  || 0.5);
+
+                // ── 5. Map back to original-text array ──────────────────────
+                const output = originalTexts.map(neutralResult);
+                validEntries.forEach(({ text, idx }) => {
+                    const trimmed  = text.trim();
+                    const isNegative = negativeSet.has(trimmed);
+                    output[idx] = {
+                        sentiment:   isNegative ? 'negative' : nonNegSentiment,
+                        confidence:  isNegative
+                            ? (analysis.negative_sentiment || 0.85)
+                            : nonNegConfidence,
+                        vader_score: 0,
+                        roberta_scores:  { negative: 0, neutral: 0, positive: 0 },
+                        pattern_matched: false,
+                        pattern_type:    null,
+                        ai_analyzed:     true
+                    };
+                });
+
+                logger.info(
+                    `AI Service: analysis done — ` +
+                    `${analysis.negative_comments || 0} negative, ` +
+                    `${posCount} positive, ${neuCount} neutral. ` +
+                    `Overall: ${analysis.overall_sentiment}`
+                );
+                return output;
+
+            } catch (err) {
+                lastError = err;
+                const status = err?.response?.status;
+                const errMsg = err?.response?.data?.detail ||
+                               err?.response?.data?.message ||
+                               err?.message || 'unknown error';
+
+                if (status === 503 && attempt < maxRetry) {
+                    logger.warn(`AI Service: HF Space returned 503 (cold start). Retrying in 10 s…`);
+                    await new Promise(r => setTimeout(r, 10000));
+                    continue;
+                }
+
+                if (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT') {
+                    logger.error(`AI Service: request timed out after ${timeout}ms — "${apiUrl}"`);
+                } else if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
+                    logger.error(`AI Service: cannot reach HF API at "${apiUrl}" — ${err.code}`);
+                } else if (status) {
+                    logger.error(`AI Service: HF API returned HTTP ${status} — ${errMsg}`);
+                } else {
+                    logger.error(`AI Service: unexpected error — ${errMsg}`, err);
+                }
+
+                break;
+            }
+        }
+
+        if (lastError) {
+            logger.warn('AI Service: all attempts failed. Returning neutral defaults so submission is unaffected.');
+        }
+        return originalTexts.map(neutralResult);
+    }
+
+    /**
+     * Analyze all text/textarea comments in a set of responses.
+     *
+     * NEVER throws — returns empty analyses + empty summary on any failure.
+     */
+    static async analyzeResponseComments(responses) {
+        try {
+            if (!Array.isArray(responses) || responses.length === 0) {
+                return { analyses: [], summary: this.getEmptySummary() };
+            }
+
+            // Extract all text comments from responses
+            const comments = [];
+            const commentMapping = [];
+
+            responses.forEach((response, responseIndex) => {
+                if (!response.answers || !Array.isArray(response.answers)) return;
+                response.answers.forEach((answer, answerIndex) => {
+                    if (
+                        (answer.type === 'text' || answer.type === 'textarea') &&
+                        answer.value &&
+                        typeof answer.value === 'string' &&
+                        answer.value.trim().length > 0
+                    ) {
+                        comments.push(answer.value.trim());
+                        commentMapping.push({
+                            responseIndex,
+                            answerIndex,
+                            responseId: response.response_id,
+                            questionId: answer.question_id
+                        });
+                    }
+                });
+            });
+
+            if (comments.length === 0) {
+                logger.info('AI Service: no text comments found in responses');
+                return { analyses: [], summary: this.getEmptySummary() };
+            }
+
+            logger.info(`AI Service: analysing ${comments.length} comment(s) from ${responses.length} response(s)`);
+
+            // analyzeSentiment never throws — always returns an array
+            const sentiments = await this.analyzeSentiment(comments);
+
+            // Map sentiments back to responses
+            const analyses = sentiments.map((sentiment, index) => {
+                const mapping = commentMapping[index];
+                if (!mapping) return null;
+                return {
+                    ...mapping,
+                    comment: comments[index],
+                    ...sentiment
+                };
+            }).filter(Boolean);
+
+            const summary = this.generateSummary(analyses);
+
+            return { analyses, summary };
+        } catch (error) {
+            logger.error('AI Service: analyzeResponseComments failed unexpectedly:', error);
+            return { analyses: [], summary: this.getEmptySummary() };
+        }
+    }
+
+    /**
+     * Generate summary from sentiment analyses
+     */
+    static generateSummary(analyses) {
+        const total = analyses.length;
+
+        if (total === 0) {
+            return this.getEmptySummary();
+        }
+
+        const sentimentCounts = {
+            positive: 0,
+            negative: 0,
+            neutral: 0
+        };
+
+        const patternCounts = {
+            complaint: 0,
+            suggestion: 0,
+            praise: 0,
+            none: 0
+        };
+
+        let totalConfidence = 0;
+        let totalVaderScore = 0;
+
+        analyses.forEach(analysis => {
+            sentimentCounts[analysis.sentiment]++;
+            
+            if (analysis.pattern_matched && analysis.pattern_type) {
+                patternCounts[analysis.pattern_type]++;
+            } else {
+                patternCounts.none++;
+            }
+
+            totalConfidence += analysis.confidence;
+            totalVaderScore += analysis.vader_score;
+        });
+
+        return {
+            total_comments: total,
+            sentiment_distribution: {
+                positive: {
+                    count: sentimentCounts.positive,
+                    percentage: ((sentimentCounts.positive / total) * 100).toFixed(2)
+                },
+                negative: {
+                    count: sentimentCounts.negative,
+                    percentage: ((sentimentCounts.negative / total) * 100).toFixed(2)
+                },
+                neutral: {
+                    count: sentimentCounts.neutral,
+                    percentage: ((sentimentCounts.neutral / total) * 100).toFixed(2)
+                }
+            },
+            pattern_distribution: {
+                complaints: patternCounts.complaint,
+                suggestions: patternCounts.suggestion,
+                praise: patternCounts.praise,
+                none: patternCounts.none
+            },
+            average_confidence: (totalConfidence / total).toFixed(4),
+            average_vader_score: (totalVaderScore / total).toFixed(4),
+            overall_sentiment: this.determineOverallSentiment(sentimentCounts, total)
+        };
+    }
+
+    /**
+     * Determine overall sentiment
+     */
+    static determineOverallSentiment(sentimentCounts, total) {
+        const positiveRatio = sentimentCounts.positive / total;
+        const negativeRatio = sentimentCounts.negative / total;
+
+        if (positiveRatio > 0.6) return 'mostly_positive';
+        if (negativeRatio > 0.6) return 'mostly_negative';
+        if (positiveRatio > 0.4) return 'positive';
+        if (negativeRatio > 0.4) return 'negative';
+        return 'neutral';
+    }
+
+    /**
+     * Get empty summary
+     */
+    static getEmptySummary() {
+        return {
+            total_comments: 0,
+            sentiment_distribution: {
+                positive: { count: 0, percentage: '0.00' },
+                negative: { count: 0, percentage: '0.00' },
+                neutral: { count: 0, percentage: '0.00' }
+            },
+            pattern_distribution: {
+                complaints: 0,
+                suggestions: 0,
+                praise: 0,
+                none: 0
+            },
+            average_confidence: '0.0000',
+            average_vader_score: '0.0000',
+            overall_sentiment: 'neutral'
+        };
+    }
+}
+
+module.exports = AIService;

@@ -1,0 +1,104 @@
+============================================
+FEEDBACK SYSTEM - DATABASE SETUP INSTRUCTIONS
+============================================
+
+STEP 1: Choose Your Database
+--------------------------------------------
+- PostgreSQL (Recommended): Use database_schema.sql
+- MySQL: Use database_schema_mysql.sql
+
+STEP 2: Create Database
+--------------------------------------------
+PostgreSQL:
+  1. Open psql or pgAdmin
+  2. Create database: CREATE DATABASE feedback_system;
+  3. Connect: \c feedback_system
+
+MySQL:
+  1. Open MySQL Workbench or command line
+  2. Create database: CREATE DATABASE feedback_system;
+  3. Use database: USE feedback_system;
+
+STEP 3: Execute SQL File
+--------------------------------------------
+PostgreSQL:
+  - Command line: psql -U postgres -d feedback_system -f database_schema.sql
+  - OR copy/paste contents into pgAdmin Query Tool
+
+MySQL:
+  - Command line: mysql -u root -p feedback_system < database_schema_mysql.sql
+  - OR copy/paste contents into MySQL Workbench
+
+STEP 4: Verify Installation
+--------------------------------------------
+Run this query to check all tables were created:
+
+PostgreSQL:
+  SELECT table_name FROM information_schema.tables 
+  WHERE table_schema = 'public' ORDER BY table_name;
+
+MySQL:
+  SHOW TABLES;
+
+Expected tables:
+  - users
+  - forms
+  - responses
+  - ai_analysis
+  - form_analytics
+  - response_emails
+
+STEP 5: Default Admin Credentials
+--------------------------------------------
+Email: admin@klu.ac.in
+Password: Admin@123
+
+IMPORTANT: Change this password after first login!
+
+STEP 6: Update Backend .env File
+--------------------------------------------
+Copy .env.example to .env and update:
+  - DB_HOST
+  - DB_PORT
+  - DB_NAME
+  - DB_USER
+  - DB_PASSWORD
+
+STEP 7: Generate Proper Password Hash
+--------------------------------------------
+The default password hash is a placeholder.
+Generate proper hash in your Node.js app:
+
+  const bcrypt = require('bcryptjs');
+  const hash = await bcrypt.hash('Admin@123', 10);
+  console.log(hash);
+
+Then update the users table:
+  UPDATE users 
+  SET password_hash = 'your_generated_hash' 
+  WHERE email = 'admin@klu.ac.in';
+
+============================================
+TROUBLESHOOTING
+============================================
+
+Error: "relation already exists"
+  - Tables already exist. Drop them first (see DROP commands in SQL file)
+
+Error: "permission denied"
+  - Ensure your database user has CREATE privileges
+
+Error: "function already exists"
+  - Add "OR REPLACE" to function definitions (already included)
+
+============================================
+NOTES
+============================================
+
+- All timestamps are in UTC
+- JSONB fields allow flexible schema evolution
+- Indexes are optimized for common query patterns
+- Triggers auto-update response counts and timestamps
+- Foreign keys maintain referential integrity
+
+============================================
