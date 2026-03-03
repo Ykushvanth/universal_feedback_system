@@ -35,7 +35,8 @@ const StudentForm = () => {
     const loadForm = async () => {
         try {
             setLoading(true);
-            const response = await formService.getForm(formId, true);
+            // Use direct Supabase call — bypasses Render backend entirely
+            const response = await formService.getFormDirect(formId);
 
             if (response.success && response.data.form) {
                 setForm(response.data.form);
@@ -50,7 +51,6 @@ const StudentForm = () => {
             } else if (msg.includes('not found')) {
                 setFormNotFound(true);
             } else {
-                // For any other error, still show closed screen to avoid blank redirects
                 setFormClosed(true);
             }
         } finally {
@@ -219,7 +219,8 @@ const StudentForm = () => {
                 answers: Object.values(answers)
             };
 
-            const response = await responseService.submitResponse(responseData);
+            // Use direct Supabase submission — bypasses Render backend entirely
+            const response = await responseService.submitResponseDirect(responseData, form);
 
             if (response.success) {
                 toast.success('Response submitted successfully!');
@@ -228,7 +229,6 @@ const StudentForm = () => {
                 toast.error(response.message || 'Failed to submit response');
             }
         } catch (error) {
-            // error may be a server JSON response { message: '...' } or a native Error
             const message = error?.message || error?.error || 'Failed to submit response';
             toast.error(message);
         } finally {

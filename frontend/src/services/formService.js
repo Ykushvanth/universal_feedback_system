@@ -4,6 +4,8 @@
  */
 
 import axios from '../config/axios';
+import supabase from '../config/supabase';
+import { isFormActive } from '../utils/helpers';
 
 const formService = {
     /**
@@ -70,6 +72,42 @@ const formService = {
     getFormStatistics: async (formId) => {
         const response = await axios.get(`/forms/${formId}/statistics`);
         return response;
+    },
+
+    /**
+     * Get form directly from Supabase (bypasses Render backend).
+     * Used by the public StudentForm page so cold-starts never affect students.
+     */
+    getFormDirect: async (formId) => {
+        const { data: form, error } = await supabase
+            .from('forms')
+            .select('*')
+            .eq('form_id', formId)
+            .single();
+
+        if (error || !form) {
+            throw new Error('Form not found');
+        }
+
+        // Parse JSON fields that Supabase may return as strings
+        const parseJson = (val, fallback) => {
+            if (!val) return fallback;
+            if (typeof val === 'string') { try { return JSON.parse(val); } catch { return fallback; } }
+            return val;
+        };
+
+        form.sections             = parseJson(form.sections, []);
+        form.settings             = parseJson(form.settings, {});
+        form.general_details_config = parseJson(form.general_details_config, { fields: [] });
+
+        // Merge general_detail_fields back into settings (mirrors backend _withGeneralDetails)
+        form.settings.general_detail_fields = form.general_details_config?.fields || [];
+
+        if (!isFormActive(form)) {
+            throw new Error('Form is not accepting responses');
+        }
+
+        return { success: true, data: { form } };
     }
 };
 

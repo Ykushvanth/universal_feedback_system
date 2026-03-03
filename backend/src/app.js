@@ -15,6 +15,10 @@ const { errorHandler } = require('./middleware/errorHandler');
 // Initialize Express app
 const app = express();
 
+// Trust reverse proxy (required for Render, Heroku, etc.)
+// Allows express-rate-limit to identify real client IPs via X-Forwarded-For
+app.set('trust proxy', 1);
+
 // =============================================================================
 // SECURITY MIDDLEWARE
 // =============================================================================
