@@ -108,27 +108,36 @@ const FormResponses = () => {
     const exportExcel = () => {
         if (responses.length === 0) { toast.error('No responses to export'); return; }
 
-        // Build ordered question list from all sections
-        const allQuestions = [];
+        // Group questions by section, preserving order
+        const sectionGroups = [];
         (form?.sections || []).forEach(sec => {
-            (sec.questions || []).forEach(q => {
-                allQuestions.push({ id: q.id, text: q.text || q.id, sectionTitle: sec.title });
-            });
+            const qs = (sec.questions || []).map(q => ({ id: q.id, text: q.text || q.id }));
+            if (qs.length > 0) sectionGroups.push({ title: sec.title || 'Section', questions: qs });
         });
+        const allQuestions = sectionGroups.flatMap(s => s.questions);
 
-        // Header: S.No, Submitted At, Name, Email, extra detail fields, then one col per question
-        const headers = [
-            'S.No', 'Submitted At', 'Name', 'Email',
-            ...filterFields.map(f => f.label),
-            ...allQuestions.map(q => `[${q.sectionTitle}] ${q.text}`)
+        // Fixed left columns (S.No, meta, general detail fields)
+        const fixedLabels = ['S.No', 'Submitted At', 'Name', 'Email', ...filterFields.map(f => f.label)];
+        const fixedCount  = fixedLabels.length;
+
+        // ── Row 1: fixed labels (will be merged down) + section titles (merged across their questions)
+        const row1 = [
+            ...fixedLabels,
+            ...sectionGroups.flatMap(s => [s.title, ...Array(s.questions.length - 1).fill('')])
         ];
 
-        // Data rows
+        // ── Row 2: blank for fixed cols (merged with row 1) + individual question texts
+        const row2 = [
+            ...Array(fixedCount).fill(''),
+            ...allQuestions.map(q => q.text)
+        ];
+
+        // ── Data rows
         const dataRows = responses.map((r, i) => {
             const details = r.general_details || {};
             const answers = r.answers || [];
-            const getAnswer = (questionId) => {
-                const ans = answers.find(a => a.question_id === questionId);
+            const getAnswer = (qid) => {
+                const ans = answers.find(a => a.question_id === qid);
                 if (!ans) return '';
                 if (Array.isArray(ans.value)) return ans.value.join(', ');
                 return ans.value ?? '';
@@ -143,9 +152,39 @@ const FormResponses = () => {
             ];
         });
 
-        // Build worksheet and download
-        const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
-        ws['!cols'] = headers.map(h => ({ wch: Math.max(h.toString().length + 2, 18) }));
+        // ── Build worksheet
+        const ws = XLSX.utils.aoa_to_sheet([row1, row2, ...dataRows]);
+
+        // ── Merge cells
+        const merges = [];
+
+        // Fixed cols: merge row 0 and row 1 vertically so they span both header rows
+        for (let c = 0; c < fixedCount; c++) {
+            merges.push({ s: { r: 0, c }, e: { r: 1, c } });
+        }
+
+        // Section cols: merge horizontally across all questions in that section (row 0 only)
+        let colCursor = fixedCount;
+        sectionGroups.forEach(sec => {
+            if (sec.questions.length > 1) {
+                merges.push({ s: { r: 0, c: colCursor }, e: { r: 0, c: colCursor + sec.questions.length - 1 } });
+            }
+            colCursor += sec.questions.length;
+        });
+
+        ws['!merges'] = merges;
+
+        // ── Column widths
+        const totalCols = fixedCount + allQuestions.length;
+        ws['!cols'] = Array.from({ length: totalCols }, (_, i) => {
+            if (i < fixedCount) return { wch: Math.max(fixedLabels[i].length + 2, 16) };
+            const q = allQuestions[i - fixedCount];
+            return { wch: Math.max((q?.text || '').length + 2, 22) };
+        });
+
+        // ── Row heights for the two header rows
+        ws['!rows'] = [{ hpt: 30 }, { hpt: 45 }];
+
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, 'Responses');
         XLSX.writeFile(wb, `responses_${form?.title || formId}_${new Date().toISOString().slice(0, 10)}.xlsx`);
@@ -302,10 +341,13 @@ const FormResponses = () => {
                             </svg>
                         </div>
                         <div className="fr-stat-content">
-                            <span className="fr-stat-label">Showing</span>
+                            <span className="fr-stat-label">{hasActive ? 'Filtered Results' : 'Total Responses'}</span>
                             <span className="fr-stat-value">
-                                {loadingR ? '…' : responses.length}
-                                {hasActive && <span className="fr-stat-sub"> filtered</span>}
+                                {loadingR ? '…' : (
+                                    hasActive
+                                        ? <>{responses.length}<span className="fr-stat-sub"> of {form?.total_responses ?? responses.length}</span></>
+                                        : responses.length
+                                )}
                             </span>
                         </div>
                     </div>

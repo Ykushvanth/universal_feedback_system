@@ -55,12 +55,14 @@ class ResponseController {
             const { formId } = req.params;
             const userId = req.user.id;
 
-            // Extract filters from query params
+            // Dynamically extract any query param as a filter — supports any field name
+            const reserved = new Set(['page', 'limit', 'sort', 'order']);
             const filters = {};
-            if (req.query.degree) filters.degree = req.query.degree;
-            if (req.query.department) filters.department = req.query.department;
-            if (req.query.section) filters.section = req.query.section;
-            if (req.query.year) filters.year = req.query.year;
+            Object.entries(req.query).forEach(([k, v]) => {
+                if (!reserved.has(k) && v && String(v).trim()) {
+                    filters[k] = String(v).trim();
+                }
+            });
 
             const responses = await ResponseService.getResponses(formId, filters, userId);
 
