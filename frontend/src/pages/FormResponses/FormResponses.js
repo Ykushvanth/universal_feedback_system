@@ -37,12 +37,13 @@ const FormResponses = () => {
     const { formId } = useParams();
     const navigate   = useNavigate();
 
-    const [form,      setForm]      = useState(null);
-    const [responses, setResponses] = useState([]);
-    const [loading,   setLoading]   = useState(true);
-    const [loadingR,  setLoadingR]  = useState(false);
-    const [expanded,  setExpanded]  = useState({});
-    const [qMap,      setQMap]      = useState({});
+    const [form,        setForm]        = useState(null);
+    const [responses,   setResponses]   = useState([]);
+    const [totalCount,  setTotalCount]  = useState(null);
+    const [loading,     setLoading]     = useState(true);
+    const [loadingR,    setLoadingR]    = useState(false);
+    const [expanded,    setExpanded]    = useState({});
+    const [qMap,        setQMap]        = useState({});
 
     const [filterFields, setFilterFields] = useState([]);
     const [filters,      setFilters]      = useState({});
@@ -83,9 +84,20 @@ const FormResponses = () => {
             const active = Object.fromEntries(
                 Object.entries(filters).filter(([, v]) => v?.trim())
             );
-            const res = await responseService.getResponses(formId, active);
+            const hasFilters = Object.keys(active).length > 0;
+
+            const [res, countRes] = await Promise.all([
+                responseService.getResponses(formId, active),
+                // Only re-fetch total count when loading without filters (or first load)
+                !hasFilters ? responseService.getResponseCount(formId) : Promise.resolve(null)
+            ]);
+
             if (res.success) {
                 setResponses(res.data.responses || []);
+            }
+            if (countRes?.success || countRes?.data) {
+                const cnt = countRes.data?.count ?? countRes.data ?? 0;
+                setTotalCount(cnt);
             }
         } catch (e) {
             console.error('Failed to load responses:', e);
@@ -201,6 +213,7 @@ const FormResponses = () => {
             if (res.success) {
                 toast.success('Response deleted');
                 setResponses(prev => prev.filter(r => r.response_id !== responseId));
+                setTotalCount(prev => prev !== null ? prev - 1 : prev);
             }
         } catch {
             toast.error('Failed to delete response');
@@ -345,8 +358,8 @@ const FormResponses = () => {
                             <span className="fr-stat-value">
                                 {loadingR ? '…' : (
                                     hasActive
-                                        ? <>{responses.length}<span className="fr-stat-sub"> of {form?.total_responses ?? responses.length}</span></>
-                                        : responses.length
+                                        ? <>{responses.length}<span className="fr-stat-sub"> of {totalCount ?? form?.total_responses ?? responses.length}</span></>
+                                        : (totalCount ?? responses.length)
                                 )}
                             </span>
                         </div>

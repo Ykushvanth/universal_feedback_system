@@ -1575,3 +1575,139 @@
     .fa-resp-header { flex-direction: column; align-items: flex-start; gap: 0.25rem; }
     .fa-perf-card { padding: 1.25rem; }
 }
+
+/* ── Sentiment Comments Panel ───────────────────────────────────────────── */
+
+.fa-comments-panel {
+    margin-top: 0.875rem;
+    border: 1px solid var(--fa-border);
+    border-radius: var(--fa-radius-sm);
+    overflow: hidden;
+}
+
+.fa-comment-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.7rem 0.875rem;
+    background: var(--fa-primary-xlight);
+    border-bottom: 1px solid var(--fa-border);
+}
+
+.fa-comment-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.33rem 0.75rem;
+    border: 1.5px solid #cfd8dc;
+    border-radius: 20px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--fa-text-sec);
+    background: white;
+    cursor: pointer;
+    transition: var(--fa-transition);
+    white-space: nowrap;
+}
+.fa-comment-tab:hover {
+    border-color: var(--fa-primary-mid);
+    color: var(--fa-primary);
+}
+.fa-comment-tab.active {
+    font-weight: 700;
+}
+
+.fa-comment-tab-badge {
+    display: inline-block;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    border-radius: 20px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: white;
+    text-align: center;
+    line-height: 17px;
+}
+
+.fa-comments-list {
+    list-style: none;
+    padding: 0.625rem 0.875rem;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.fa-comment-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--fa-radius-xs);
+    background: #f8f9fe;
+    border-left: 3px solid #cfd8dc;
+    transition: background 0.15s;
+}
+.fa-comment-item.sent-positive,
+.fa-comment-item.sent-mostly_positive  { border-left-color: #43a047; background: #f1f8f1; }
+.fa-comment-item.sent-negative,
+.fa-comment-item.sent-mostly_negative  { border-left-color: #e53935; background: #fff5f5; }
+.fa-comment-item.sent-neutral          { border-left-color: #fb8c00; background: #fff8f0; }
+.fa-comment-item.sent-mixed            { border-left-color: #1e88e5; background: #f0f5ff; }
+
+.fa-comment-dot {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-top: 5px;
+}
+
+.fa-comment-text {
+    flex: 1;
+    font-size: 0.83rem;
+    color: var(--fa-text-main);
+    line-height: 1.55;
+    font-style: italic;
+    word-break: break-word;
+}
+
+.fa-comment-senti-tag {
+    flex-shrink: 0;
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 0.15rem 0.5rem;
+    border-radius: 20px;
+    border: 1px solid;
+    text-transform: capitalize;
+    align-self: flex-start;
+    margin-top: 2px;
+    white-space: nowrap;
+}
+
+.fa-comment-qtext {
+    font-size: 0.71rem;
+    font-weight: 600;
+    color: var(--fa-primary-mid);
+    margin-bottom: 0.2rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    opacity: 0.8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+@media (max-width: 480px) {
+    .fa-comment-tabs { gap: 0.35rem; }
+    .fa-comment-tab  { font-size: 0.73rem; padding: 0.3rem 0.6rem; }
+    .fa-comments-list { max-height: 240px; }
+}
+
+.fa-comments-panel .fa-no-neg {
+    padding: 0.875rem 1rem;
+    margin: 0;
+}

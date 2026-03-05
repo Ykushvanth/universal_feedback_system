@@ -45,6 +45,8 @@ const FormAnalysis = () => {
     const [appliedFilters, setAppliedFilters]   = useState({});
     const [filterFields, setFilterFields]       = useState([]);
     const [showReportPanel, setShowReportPanel] = useState(false);
+    const [commentTabs, setCommentTabs]         = useState({}); // questionId → active tab
+    const [overviewCommentTab, setOverviewCommentTab] = useState('all');
     const [reportOptions, setReportOptions]     = useState({
         overview: true, sections: true, questions: true,
         sentiment: true, negative_comments: true
@@ -211,9 +213,19 @@ const FormAnalysis = () => {
                     });
                 }
 
-                if (reportOptions.negative_comments && q2.negative_comments?.length > 0) {
-                    rows.push(['', '', 'Negative Comments:']);
-                    q2.negative_comments.forEach((c, i) => rows.push(['', '', `  ${i + 1}.`, c.text]));
+                if (reportOptions.negative_comments && q2.all_comments?.length > 0) {
+                    const groups = [
+                        { label: 'Positive Comments', items: [...(q2.positive_comments || []), ...(q2.mostly_positive_comments || [])] },
+                        { label: 'Neutral Comments',  items: q2.neutral_comments || [] },
+                        { label: 'Negative Comments', items: [...(q2.negative_comments || []), ...(q2.mostly_negative_comments || [])] },
+                        { label: 'Mixed Comments',    items: q2.mixed_comments    || [] },
+                    ];
+                    groups.forEach(({ label, items }) => {
+                        if (items.length > 0) {
+                            rows.push(['', '', `${label} (${items.length}):`]);
+                            items.forEach((c, i) => rows.push(['', '', `  ${i + 1}.`, c.text]));
+                        }
+                    });
                 }
                 rows.push([]);
             });
@@ -282,9 +294,19 @@ const FormAnalysis = () => {
                         html += row(cell(''), cell(opt), cell(cnt), cell(`${Math.round((Number(cnt)/total)*100)}%`));
                     });
                 }
-                if (reportOptions.negative_comments && q2.negative_comments?.length) {
-                    html += row(cell(''), cell('Negative Comments', true));
-                    q2.negative_comments.forEach((c, i) => html += row(cell(''), cell(`${i+1}. ${c.text}`)));
+                if (reportOptions.negative_comments && q2.all_comments?.length) {
+                    const groups = [
+                        { label: 'Positive Comments', items: [...(q2.positive_comments || []), ...(q2.mostly_positive_comments || [])] },
+                        { label: 'Neutral Comments',  items: q2.neutral_comments || [] },
+                        { label: 'Negative Comments', items: [...(q2.negative_comments || []), ...(q2.mostly_negative_comments || [])] },
+                        { label: 'Mixed Comments',    items: q2.mixed_comments    || [] },
+                    ];
+                    groups.forEach(({ label, items }) => {
+                        if (items.length > 0) {
+                            html += row(cell(''), cell(`${label} (${items.length})`, true));
+                            items.forEach((c, i) => html += row(cell(''), cell(`${i+1}. ${c.text}`)));
+                        }
+                    });
                 }
                 html += row(cell(''));
             });
@@ -682,7 +704,7 @@ th,td{border:1px solid #bbb;padding:4px 8px;font-size:11px} .hdr{background:#1a2
                                 { key: 'sections',           label: 'Section Analysis' },
                                 { key: 'questions',          label: 'Question Details' },
                                 { key: 'sentiment',          label: 'Sentiment Analysis' },
-                                { key: 'negative_comments',  label: 'Negative Comments' }
+                                { key: 'negative_comments',  label: 'Comments by Sentiment' }
                             ].map(({ key, label }) => (
                                 <label key={key} className="fa-report-opt-check">
                                     <input
@@ -869,35 +891,128 @@ th,td{border:1px solid #bbb;padding:4px 8px;font-size:11px} .hdr{background:#1a2
                 )}
 
                 {/* ── AI Sentiment (only when form has text questions) ── */}
-                {analysis.has_text_questions && analysis.overall_sentiment !== 'not_applicable' && (
-                    <div className="fa-perf-card">
-                        <h2 className="fa-section-heading">AI Sentiment Analysis</h2>
-                        <p className="fa-note">Sentiment computed from open-text responses only.</p>
-                        <div className="fa-sentiment-overview">
-                            <div className="fa-sentiment-badge">
-                                <span className="fa-senti-label">Overall Sentiment</span>
-                                <span
-                                    className="fa-senti-value"
-                                    style={{
-                                        background: SENTIMENT_COLORS[analysis.overall_sentiment] || '#757575',
-                                    }}
-                                >
-                                    {(analysis.overall_sentiment || '').replace(/_/g, ' ')}
-                                </span>
+                {analysis.has_text_questions && analysis.overall_sentiment !== 'not_applicable' && (() => {
+                    // Aggregate all comments from every text question
+                    const textQs = (analysis.question_analysis || []).filter(
+                        q => q.question_type === 'text' || q.question_type === 'textarea'
+                    );
+                    const allC  = textQs.flatMap(q => (q.all_comments || []).map(c => ({ ...c, questionText: q.question_text })));
+                    const posC  = textQs.flatMap(q => [...(q.positive_comments || []), ...(q.mostly_positive_comments || [])].map(c => ({ ...c, questionText: q.question_text })));
+                    const neutC = textQs.flatMap(q => (q.neutral_comments  || []).map(c => ({ ...c, questionText: q.question_text })));
+                    const negC  = textQs.flatMap(q => [...(q.negative_comments || []), ...(q.mostly_negative_comments || [])].map(c => ({ ...c, questionText: q.question_text })));
+                    const mixC  = textQs.flatMap(q => (q.mixed_comments || []).map(c => ({ ...c, questionText: q.question_text })));
+
+                    const tabs = [
+                        { key: 'all',      label: 'All',      count: allC.length,  color: '#546e7a' },
+                        { key: 'positive', label: 'Positive', count: posC.length,  color: '#2e7d32' },
+                        { key: 'neutral',  label: 'Neutral',  count: neutC.length, color: '#f57c00' },
+                        { key: 'negative', label: 'Negative', count: negC.length,  color: '#d32f2f' },
+                        ...(mixC.length > 0 ? [{ key: 'mixed', label: 'Mixed', count: mixC.length, color: '#1565c0' }] : []),
+                    ];
+                    const activeTab = overviewCommentTab;
+                    const visibleComments = (() => {
+                        if (activeTab === 'all')      return allC;
+                        if (activeTab === 'positive') return posC.map(c => ({ ...c, sentiment: 'positive' }));
+                        if (activeTab === 'neutral')  return neutC.map(c => ({ ...c, sentiment: 'neutral' }));
+                        if (activeTab === 'negative') return negC.map(c => ({ ...c, sentiment: 'negative' }));
+                        if (activeTab === 'mixed')    return mixC.map(c => ({ ...c, sentiment: 'mixed' }));
+                        return [];
+                    })();
+
+                    return (
+                        <div className="fa-perf-card">
+                            <h2 className="fa-section-heading">AI Sentiment Analysis</h2>
+                            <p className="fa-note">Sentiment computed from open-text responses only.</p>
+                            <div className="fa-sentiment-overview">
+                                <div className="fa-sentiment-badge">
+                                    <span className="fa-senti-label">Overall Sentiment</span>
+                                    <span
+                                        className="fa-senti-value"
+                                        style={{ background: SENTIMENT_COLORS[analysis.overall_sentiment] || '#757575' }}
+                                    >
+                                        {(analysis.overall_sentiment || '').replace(/_/g, ' ')}
+                                    </span>
+                                </div>
+                                {Object.keys(analysis.sentiment_distribution || {}).length > 0 && (
+                                    <div className="fa-senti-dist">
+                                        {Object.entries(analysis.sentiment_distribution).filter(([, v]) => Number(v) > 0).map(([key, val]) => (
+                                            <div
+                                                key={key}
+                                                className="fa-senti-item"
+                                                style={{ borderColor: (SENTIMENT_COLORS[key] || '#ccc') + '55', background: (SENTIMENT_COLORS[key] || '#ccc') + '11', cursor: allC.length > 0 ? 'pointer' : 'default' }}
+                                                onClick={() => {
+                                                    if (allC.length === 0) return;
+                                                    const tabKey = key === 'mostly_positive' ? 'positive' : key === 'mostly_negative' ? 'negative' : key;
+                                                    setOverviewCommentTab(tabs.find(t => t.key === tabKey) ? tabKey : 'all');
+                                                }}
+                                                title={allC.length > 0 ? `Click to filter by ${key.replace(/_/g, ' ')} comments` : ''}
+                                            >
+                                                <span className="fa-senti-count" style={{ color: SENTIMENT_COLORS[key] || '#555' }}>{val}</span>
+                                                <span className="fa-senti-key">{key.replace(/_/g, ' ')}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
-                            {Object.keys(analysis.sentiment_distribution || {}).length > 0 && (
-                                <div className="fa-senti-dist">
-                                    {Object.entries(analysis.sentiment_distribution).filter(([, v]) => Number(v) > 0).map(([key, val]) => (
-                                        <div key={key} className="fa-senti-item" style={{ borderColor: (SENTIMENT_COLORS[key] || '#ccc') + '55', background: (SENTIMENT_COLORS[key] || '#ccc') + '11' }}>
-                                            <span className="fa-senti-count" style={{ color: SENTIMENT_COLORS[key] || '#555' }}>{val}</span>
-                                            <span className="fa-senti-key">{key.replace(/_/g, ' ')}</span>
-                                        </div>
-                                    ))}
+
+                            {/* ── Comment viewer ── */}
+                            {allC.length > 0 && (
+                                <div className="fa-comments-panel" style={{ marginTop: '1.25rem' }}>
+                                    <div className="fa-comment-tabs">
+                                        {tabs.filter(t => t.count > 0 || t.key === 'all').map(t => (
+                                            <button
+                                                key={t.key}
+                                                className={`fa-comment-tab${activeTab === t.key ? ' active' : ''}`}
+                                                style={activeTab === t.key ? { borderColor: t.color, color: t.color, background: t.color + '14' } : {}}
+                                                onClick={() => setOverviewCommentTab(t.key)}
+                                            >
+                                                {t.label}
+                                                {t.count > 0 && (
+                                                    <span
+                                                        className="fa-comment-tab-badge"
+                                                        style={{ background: activeTab === t.key ? t.color : '#cfd8dc' }}
+                                                    >
+                                                        {t.count}
+                                                    </span>
+                                                )}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    {visibleComments.length === 0 ? (
+                                        <p className="fa-no-neg" style={{ padding: '0.875rem 1rem', margin: 0 }}>
+                                            ✓ No {activeTab} comments.
+                                        </p>
+                                    ) : (
+                                        <ul className="fa-comments-list">
+                                            {visibleComments.map((c, ci) => (
+                                                <li key={ci} className={`fa-comment-item sent-${c.sentiment || 'neutral'}`}>
+                                                    <span className="fa-comment-dot" style={{ background: SENTIMENT_COLORS[c.sentiment] || '#90a4ae' }} />
+                                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                                        {c.questionText && (
+                                                            <div className="fa-comment-qtext">{c.questionText}</div>
+                                                        )}
+                                                        <span className="fa-comment-text">&#8220;{c.text}&#8221;</span>
+                                                    </div>
+                                                    {activeTab === 'all' && c.sentiment && (
+                                                        <span
+                                                            className="fa-comment-senti-tag"
+                                                            style={{ color: SENTIMENT_COLORS[c.sentiment] || '#546e7a', borderColor: (SENTIMENT_COLORS[c.sentiment] || '#546e7a') + '44' }}
+                                                        >
+                                                            {c.sentiment.replace(/_/g, ' ')}
+                                                        </span>
+                                                    )}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
                                 </div>
                             )}
+                            {allC.length === 0 && (
+                                <p className="fa-note" style={{ marginTop: '0.875rem' }}>No AI-analysed comments yet — comments are processed in the background after submission.</p>
+                            )}
                         </div>
-                    </div>
-                )}
+                    );
+                })()}
             </>
         );
     };
@@ -1002,32 +1117,86 @@ th,td{border:1px solid #bbb;padding:4px 8px;font-size:11px} .hdr{background:#1a2
                                         </div>
                                     )}
 
-                                    {/* Text questions: negative comments only */}
-                                    {isText && (
-                                        <div className="fa-text-analysis">
-                                            {q.negative_comments?.length > 0 ? (
-                                                <div className="fa-neg-inline">
-                                                    <span className="fa-neg-inline-label">
-                                                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: 4, verticalAlign: 'middle' }}>
-                                                            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-                                                        </svg>
-                                                        {q.negative_comments.length} Negative Comment{q.negative_comments.length !== 1 ? 's' : ''}
-                                                    </span>
-                                                    <ul className="fa-neg-list-inline">
-                                                        {q.negative_comments.map((c, ci) => (
-                                                            <li key={ci}>&#8220;{c.text}&#8221;</li>
-                                                        ))}
-                                                    </ul>
-                                                </div>
-                                            ) : (
-                                                <p className="fa-no-neg">
-                                                    {q.total_responses > 0
-                                                        ? '✓ No negative comments for this question.'
-                                                        : 'No responses yet.'}
-                                                </p>
-                                            )}
-                                        </div>
-                                    )}
+                                    {/* Text questions: sentiment-categorised comments */}
+                                    {isText && (() => {
+                                        const allC      = q.all_comments || [];
+                                        const posC      = [...(q.positive_comments || []), ...(q.mostly_positive_comments || [])];
+                                        const neutC     = q.neutral_comments || [];
+                                        const negC      = [...(q.negative_comments || []), ...(q.mostly_negative_comments || [])];
+                                        const mixC      = q.mixed_comments || [];
+                                        const hasAny    = allC.length > 0;
+                                        const activeTab = commentTabs[q.question_id] || 'all';
+                                        const tabs = [
+                                            { key: 'all',      label: 'All',      count: allC.length,  color: '#546e7a' },
+                                            { key: 'positive', label: 'Positive', count: posC.length,  color: '#2e7d32' },
+                                            { key: 'neutral',  label: 'Neutral',  count: neutC.length, color: '#f57c00' },
+                                            { key: 'negative', label: 'Negative', count: negC.length,  color: '#d32f2f' },
+                                            ...(mixC.length > 0 ? [{ key: 'mixed', label: 'Mixed', count: mixC.length, color: '#1565c0' }] : []),
+                                        ];
+                                        const visibleComments = (() => {
+                                            if (activeTab === 'all')      return allC.map(c => ({ text: c.text, sentiment: c.sentiment }));
+                                            if (activeTab === 'positive') return posC.map(c => ({ text: c.text, sentiment: 'positive' }));
+                                            if (activeTab === 'neutral')  return neutC.map(c => ({ text: c.text, sentiment: 'neutral' }));
+                                            if (activeTab === 'negative') return negC.map(c => ({ text: c.text, sentiment: 'negative' }));
+                                            if (activeTab === 'mixed')    return mixC.map(c => ({ text: c.text, sentiment: 'mixed' }));
+                                            return [];
+                                        })();
+
+                                        return (
+                                            <div className="fa-comments-panel">
+                                                {!hasAny ? (
+                                                    <p className="fa-no-neg">
+                                                        {q.total_responses > 0
+                                                            ? '✓ No AI-analysed comments for this question.'
+                                                            : 'No responses yet.'}
+                                                    </p>
+                                                ) : (
+                                                    <>
+                                                        <div className="fa-comment-tabs">
+                                                            {tabs.filter(t => t.count > 0 || t.key === 'all').map(t => (
+                                                                <button
+                                                                    key={t.key}
+                                                                    className={`fa-comment-tab${activeTab === t.key ? ' active' : ''}`}
+                                                                    style={activeTab === t.key ? { borderColor: t.color, color: t.color, background: t.color + '14' } : {}}
+                                                                    onClick={() => setCommentTabs(prev => ({ ...prev, [q.question_id]: t.key }))}
+                                                                >
+                                                                    {t.label}
+                                                                    {t.count > 0 && (
+                                                                        <span
+                                                                            className="fa-comment-tab-badge"
+                                                                            style={{ background: activeTab === t.key ? t.color : '#cfd8dc' }}
+                                                                        >
+                                                                            {t.count}
+                                                                        </span>
+                                                                    )}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                        {visibleComments.length === 0 ? (
+                                                            <p className="fa-no-neg">✓ No {activeTab} comments.</p>
+                                                        ) : (
+                                                            <ul className="fa-comments-list">
+                                                                {visibleComments.map((c, ci) => (
+                                                                    <li key={ci} className={`fa-comment-item sent-${c.sentiment || 'neutral'}`}>
+                                                                        <span className="fa-comment-dot" style={{ background: SENTIMENT_COLORS[c.sentiment] || '#90a4ae' }} />
+                                                                        <span className="fa-comment-text">&#8220;{c.text}&#8221;</span>
+                                                                        {activeTab === 'all' && c.sentiment && (
+                                                                            <span
+                                                                                className="fa-comment-senti-tag"
+                                                                                style={{ color: SENTIMENT_COLORS[c.sentiment] || '#546e7a', borderColor: (SENTIMENT_COLORS[c.sentiment] || '#546e7a') + '44' }}
+                                                                            >
+                                                                                {c.sentiment.replace(/_/g, ' ')}
+                                                                            </span>
+                                                                        )}
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                        )}
+                                                    </>
+                                                )}
+                                            </div>
+                                        );
+                                    })()}
                                 </div>
                             );
                         })}

@@ -26,11 +26,16 @@ class AnalysisService {
                 throw new Error('Unauthorized to view analysis');
             }
 
-            // Get filtered responses
-            const responses = await ResponseModel.getByFormId(formId, filters);
+            // Get filtered responses AND the true count in parallel
+            const [responses, trueCount] = await Promise.all([
+                ResponseModel.getByFormId(formId, filters),
+                ResponseModel.getCount(formId, filters)
+            ]);
 
-            // Calculate basic statistics
+            // Calculate basic statistics — override the array-based count with the DB's
+            // exact count so it is never capped by Supabase's default row limit
             const basicStats = this.calculateBasicStatistics(responses, form);
+            basicStats.total_responses = trueCount;
 
             // Get AI sentiment analysis
             const sentimentAnalysis = await AIService.analyzeResponseComments(responses);
@@ -68,6 +73,40 @@ class AnalysisService {
                     ? AIService.generateSummary(qSentiments)
                     : null;
 
+                // ── Build comments categorised by sentiment ──────────────────────────
+                // Priority: use sentiments already stored on each answer in the DB (written
+                // by the background AI job at submission time).  Fall back to the live
+                // re-analysis results (qSentiments) only for answers that have no stored
+                // sentiment yet (ai_analyzed === false / missing).
+                const commentsBySentiment = {};
+                if (isTextType) {
+                    const stored = q.stored_comments || [];
+                    const hasStoredAI = stored.some(c => c.ai_analyzed);
+
+                    if (hasStoredAI || stored.length > 0) {
+                        // Use stored per-answer sentiments — always accurate regardless of batch size
+                        stored.forEach(c => {
+                            const s = c.sentiment || 'neutral';
+                            if (!commentsBySentiment[s]) commentsBySentiment[s] = [];
+                            commentsBySentiment[s].push({ text: c.text, confidence: c.confidence });
+                        });
+                    } else {
+                        // No stored sentiment yet — fall back to live AI results
+                        qSentiments.forEach(a => {
+                            const s = a.sentiment || 'neutral';
+                            if (!commentsBySentiment[s]) commentsBySentiment[s] = [];
+                            commentsBySentiment[s].push({ text: a.comment, confidence: a.confidence || 0 });
+                        });
+                    }
+
+                    // Build all_comments from whichever source was used
+                    const sourceComments = (hasStoredAI || stored.length > 0)
+                        ? stored.map(c => ({ text: c.text, sentiment: c.sentiment || 'neutral', confidence: c.confidence }))
+                        : qSentiments.map(a => ({ text: a.comment, sentiment: a.sentiment || 'neutral', confidence: a.confidence || 0 }));
+
+                    commentsBySentiment._all = sourceComments;
+                }
+
                 return {
                     question_id: q.question_id,
                     question_text: q.question_text,
@@ -84,22 +123,63 @@ class AnalysisService {
                     option_distribution: isTextType ? {} : Object.fromEntries(
                         Object.entries(q.answers || {}).map(([k, v]) => [k, typeof v === 'object' ? v.count : v])
                     ),
-                    // Open-text question specific: negative comments from live AI analysis
+                    // Open-text question specific: comments grouped by AI sentiment
                     sample_comments: [],
                     negative_comments: isTextType
-                        ? qSentiments
-                            .filter(a => a.sentiment === 'negative')
-                            .map(a => ({ text: a.comment, confidence: a.confidence || 0 }))
+                        ? (commentsBySentiment.negative || [])
+                        : [],
+                    mostly_negative_comments: isTextType
+                        ? (commentsBySentiment.mostly_negative || [])
+                        : [],
+                    neutral_comments: isTextType
+                        ? (commentsBySentiment.neutral || [])
+                        : [],
+                    mostly_positive_comments: isTextType
+                        ? (commentsBySentiment.mostly_positive || [])
+                        : [],
+                    positive_comments: isTextType
+                        ? (commentsBySentiment.positive || [])
+                        : [],
+                    mixed_comments: isTextType
+                        ? (commentsBySentiment.mixed || [])
+                        : [],
+                    // Flat list with sentiment tag — used when showing "All"
+                    all_comments: isTextType
+                        ? (commentsBySentiment._all || [])
                         : [],
                     ai_sentiment: qSentimentSummary
                 };
             });
 
+            // Build sentiment_distribution — prefer counts derived from stored-per-answer
+            // sentiments (accurate for any batch size) over the live AI summary.
+            const storedDistribution = {};
+            // Re-derive from the question array we just built
+            let useStoredDist = false;
+            questionAnalysisArray.forEach(q => {
+                (q.all_comments || []).forEach(c => {
+                    const s = c.sentiment || 'neutral';
+                    storedDistribution[s] = (storedDistribution[s] || 0) + 1;
+                    useStoredDist = true;
+                });
+            });
+
             // Build sentiment_distribution as { SentimentName: count } for the pie chart
             const rawDist = sentimentAnalysis.summary?.sentiment_distribution || {};
-            const sentimentDistribution = Object.fromEntries(
-                Object.entries(rawDist).map(([k, v]) => [k, typeof v === 'object' ? v.count : v])
-            );
+            const sentimentDistribution = useStoredDist
+                ? storedDistribution
+                : Object.fromEntries(
+                    Object.entries(rawDist).map(([k, v]) => [k, typeof v === 'object' ? v.count : v])
+                  );
+
+            // Derive overall_sentiment from storedDistribution when available
+            let overallSentiment = sentimentAnalysis.analyses?.length > 0
+                ? (sentimentAnalysis.summary?.overall_sentiment || 'neutral')
+                : 'not_applicable';
+            if (useStoredDist) {
+                const sortedEntries = Object.entries(storedDistribution).sort((a, b) => b[1] - a[1]);
+                if (sortedEntries.length > 0) overallSentiment = sortedEntries[0][0];
+            }
 
             // Build section-wise analysis
             const sectionAnalysis = this.buildSectionAnalysis(questionAnalysisArray, form);
@@ -120,9 +200,7 @@ class AnalysisService {
                 overall_score: overallScore,
                 // Sentiment only for open-text questions
                 has_text_questions: questionAnalysisArray.some(q => q.question_type === 'text' || q.question_type === 'textarea'),
-                overall_sentiment: sentimentAnalysis.analyses?.length > 0
-                    ? (sentimentAnalysis.summary?.overall_sentiment || 'neutral')
-                    : 'not_applicable',
+                overall_sentiment: overallSentiment,
                 sentiment_distribution: sentimentDistribution,
                 // Section-wise and question-wise analysis
                 section_analysis: sectionAnalysis,
@@ -321,15 +399,14 @@ class AnalysisService {
                                 if (!stat.text_answers) stat.text_answers = [];
                                 stat.text_answers.push(answer.value.trim());
 
-                                // Collect AI-flagged negative comments separately
-                                // (sentiment is stored on each answer by the background AI job)
-                                if (answer.sentiment === 'negative') {
-                                    if (!stat.negative_comments) stat.negative_comments = [];
-                                    stat.negative_comments.push({
-                                        text:       answer.value.trim(),
-                                        confidence: answer.sentiment_confidence ?? 0
-                                    });
-                                }
+                                // Collect stored AI sentiment (written by background job at submission)
+                                if (!stat.stored_comments) stat.stored_comments = [];
+                                stat.stored_comments.push({
+                                    text:       answer.value.trim(),
+                                    sentiment:  answer.sentiment  || 'neutral',
+                                    confidence: answer.sentiment_confidence ?? 0,
+                                    ai_analyzed: answer.ai_analyzed ?? false
+                                });
                             }
                         }
                     }

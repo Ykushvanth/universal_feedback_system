@@ -134,39 +134,48 @@ class ResponseModel {
     }
 
     /**
-     * Get all responses for a form
+     * Get all responses for a form (paginates automatically to bypass Supabase's 1000-row cap)
      */
     static async getByFormId(formId, filters = {}) {
         try {
-            let query = supabase
-                .from('responses')
-                .select('*')
-                .eq('form_id', formId);
-
-            // Apply filters against general_details JSONB.
-            // All exact-match filters (typically dropdown/radio/select options) are combined into a
-            // single .contains() call so that Supabase generates one @> operator covering all criteria
-            // simultaneously.  Calling .contains() multiple times with the same column name causes the
-            // Supabase query builder to overwrite the previous filter, so only the LAST one would
-            // apply — that is the bug we are fixing here.
+            // Build the shared filter object once
             const exactFilters = {};
             Object.entries(filters).forEach(([key, value]) => {
-                if (value && value.trim()) {
-                    exactFilters[key] = value.trim();
+                if (value && String(value).trim()) {
+                    exactFilters[key] = String(value).trim();
                 }
             });
+            const hasFilters = Object.keys(exactFilters).length > 0;
 
-            if (Object.keys(exactFilters).length > 0) {
-                query = query.contains('general_details', exactFilters);
+            const PAGE_SIZE = 1000;
+            let allRows = [];
+            let from = 0;
+
+            // Keep fetching pages until a page returns fewer rows than PAGE_SIZE
+            while (true) {
+                let query = supabase
+                    .from('responses')
+                    .select('*')
+                    .eq('form_id', formId)
+                    .order('submitted_at', { ascending: false })
+                    .range(from, from + PAGE_SIZE - 1);
+
+                if (hasFilters) {
+                    query = query.contains('general_details', exactFilters);
+                }
+
+                const { data, error } = await query;
+
+                if (error) throw error;
+
+                const rows = data || [];
+                allRows = allRows.concat(rows);
+
+                if (rows.length < PAGE_SIZE) break; // last page reached
+                from += PAGE_SIZE;
             }
 
-            const { data, error } = await query.order('submitted_at', { ascending: false });
-
-            if (error) {
-                throw error;
-            }
-
-            return (data || []).map(row => this._parseResponse(row));
+            return allRows.map(row => this._parseResponse(row));
         } catch (error) {
             logger.error('Error getting responses by form ID:', error);
             throw error;
@@ -203,14 +212,27 @@ class ResponseModel {
     }
 
     /**
-     * Get response count for a form
+     * Get response count for a form, with optional filters on general_details JSONB
      */
-    static async getCount(formId) {
+    static async getCount(formId, filters = {}) {
         try {
-            const { count, error } = await supabase
+            let query = supabase
                 .from('responses')
                 .select('*', { count: 'exact', head: true })
                 .eq('form_id', formId);
+
+            // Apply the same JSONB filter logic used in getByFormId
+            const exactFilters = {};
+            Object.entries(filters).forEach(([key, value]) => {
+                if (value && String(value).trim()) {
+                    exactFilters[key] = String(value).trim();
+                }
+            });
+            if (Object.keys(exactFilters).length > 0) {
+                query = query.contains('general_details', exactFilters);
+            }
+
+            const { count, error } = await query;
 
             if (error) {
                 throw error;
