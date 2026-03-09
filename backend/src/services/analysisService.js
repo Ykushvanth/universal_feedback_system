@@ -37,8 +37,32 @@ class AnalysisService {
             const basicStats = this.calculateBasicStatistics(responses, form);
             basicStats.total_responses = trueCount;
 
-            // Get AI sentiment analysis
+            // Get AI sentiment analysis (skips already-cached comments automatically)
             const sentimentAnalysis = await AIService.analyzeResponseComments(responses);
+
+            // ── Persist new sentiments back to DB (background, non-blocking) ─────────
+            // After the first analysis, every response.answer gets ai_analyzed=true.
+            // All future analysis calls will skip the HF API entirely for those comments.
+            if (sentimentAnalysis.newAnalyses && sentimentAnalysis.newAnalyses.length > 0) {
+                // Build a map: responseId → updated answers array
+                const responseUpdates = new Map();
+                sentimentAnalysis.newAnalyses.forEach(a => {
+                    const response = responses[a.responseIndex];
+                    if (!response) return;
+                    const answer = response.answers[a.answerIndex];
+                    if (!answer) return;
+                    answer.sentiment            = a.sentiment;
+                    answer.sentiment_confidence = a.confidence;
+                    answer.ai_analyzed          = true;
+                    responseUpdates.set(response.response_id, response.answers);
+                });
+                if (responseUpdates.size > 0) {
+                    // Fire-and-forget — user gets analysis result without waiting for DB writes
+                    ResponseModel.bulkUpdateSentiments(
+                        Array.from(responseUpdates.entries()).map(([id, answers]) => ({ response_id: id, answers }))
+                    ).catch(e => logger.error('Background sentiment write-back error:', e));
+                }
+            }
 
             // Get question-wise analysis
             const questionAnalysis = this.calculateQuestionAnalysis(responses, form);
@@ -74,37 +98,66 @@ class AnalysisService {
                     : null;
 
                 // ── Build comments categorised by sentiment ──────────────────────────
-                // Priority: use sentiments already stored on each answer in the DB (written
-                // by the background AI job at submission time).  Fall back to the live
-                // re-analysis results (qSentiments) only for answers that have no stored
-                // sentiment yet (ai_analyzed === false / missing).
+                // Always use the live API result as the primary source — same approach
+                // as iqac_repo3 where all comments are sent together at analysis time.
+                // This ensures the latest patterns in the HF model are applied and
+                // avoids stale stored sentiments from a previous background job run.
+                // Stored sentiments (ai_analyzed === true) are only used as a fallback
+                // when the live API call returned no result for a specific comment.
                 const commentsBySentiment = {};
                 if (isTextType) {
                     const stored = q.stored_comments || [];
-                    const hasStoredAI = stored.some(c => c.ai_analyzed);
+                    const normText = t => String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-                    if (hasStoredAI || stored.length > 0) {
-                        // Use stored per-answer sentiments — always accurate regardless of batch size
+                    // Build a normalised-text → live result map for O(1) lookup
+                    const liveMap = {};
+                    qSentiments.forEach(a => { liveMap[normText(a.comment)] = a; });
+
+                    const hasLiveResults = qSentiments.length > 0;
+
+                    if (stored.length > 0) {
                         stored.forEach(c => {
-                            const s = c.sentiment || 'neutral';
+                            let s, conf;
+                            // Live result wins — full-batch API call gives best accuracy
+                            const live = liveMap[normText(c.text)];
+                            if (live) {
+                                s    = live.sentiment || 'neutral';
+                                conf = live.confidence || 0;
+                            } else if (c.ai_analyzed) {
+                                // No live result; fall back to stored background-job result
+                                s    = c.sentiment || 'neutral';
+                                conf = c.confidence;
+                            } else {
+                                s    = 'neutral';
+                                conf = 0;
+                            }
                             if (!commentsBySentiment[s]) commentsBySentiment[s] = [];
-                            commentsBySentiment[s].push({ text: c.text, confidence: c.confidence });
+                            commentsBySentiment[s].push({ text: c.text, confidence: conf });
                         });
-                    } else {
-                        // No stored sentiment yet — fall back to live AI results
+
+                        commentsBySentiment._all = stored.map(c => {
+                            const live = liveMap[normText(c.text)];
+                            if (live) {
+                                return { text: c.text, sentiment: live.sentiment || 'neutral', confidence: live.confidence || 0 };
+                            }
+                            if (c.ai_analyzed) {
+                                return { text: c.text, sentiment: c.sentiment || 'neutral', confidence: c.confidence };
+                            }
+                            return { text: c.text, sentiment: 'neutral', confidence: 0 };
+                        });
+                    } else if (hasLiveResults) {
+                        // No stored comments — use live AI results directly
                         qSentiments.forEach(a => {
                             const s = a.sentiment || 'neutral';
                             if (!commentsBySentiment[s]) commentsBySentiment[s] = [];
                             commentsBySentiment[s].push({ text: a.comment, confidence: a.confidence || 0 });
                         });
+                        commentsBySentiment._all = qSentiments.map(a => ({
+                            text:       a.comment,
+                            sentiment:  a.sentiment || 'neutral',
+                            confidence: a.confidence || 0
+                        }));
                     }
-
-                    // Build all_comments from whichever source was used
-                    const sourceComments = (hasStoredAI || stored.length > 0)
-                        ? stored.map(c => ({ text: c.text, sentiment: c.sentiment || 'neutral', confidence: c.confidence }))
-                        : qSentiments.map(a => ({ text: a.comment, sentiment: a.sentiment || 'neutral', confidence: a.confidence || 0 }));
-
-                    commentsBySentiment._all = sourceComments;
                 }
 
                 return {

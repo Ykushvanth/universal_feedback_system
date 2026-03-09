@@ -246,6 +246,31 @@ class ResponseModel {
     }
 
     /**
+     * Bulk-update the `answers` field of multiple responses after sentiment analysis.
+     * Runs in parallel batches so it doesn't block the analysis response.
+     */
+    static async bulkUpdateSentiments(updates) {
+        // updates: [{ response_id, answers }]
+        if (!updates || updates.length === 0) return;
+        const BATCH = 50; // 50 parallel updates per round
+        for (let i = 0; i < updates.length; i += BATCH) {
+            const chunk = updates.slice(i, i + BATCH);
+            await Promise.all(
+                chunk.map(u =>
+                    supabase
+                        .from('responses')
+                        .update({ answers: u.answers })
+                        .eq('response_id', u.response_id)
+                        .then(({ error }) => {
+                            if (error) logger.error(`Sentiment write-back failed for ${u.response_id}:`, error.message);
+                        })
+                )
+            );
+        }
+        logger.info(`AI Service: sentiment write-back complete for ${updates.length} response(s)`);
+    }
+
+    /**
      * Delete a single response by ID
      */
     static async deleteById(responseId) {

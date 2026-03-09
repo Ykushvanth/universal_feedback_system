@@ -14,8 +14,14 @@ const analysisService = {
             ...filters,
             cache: useCache.toString()
         }).toString();
-        
-        const response = await axios.get(`/analysis/${formId}${params ? '?' + params : ''}`);
+
+        // Analysis can take several minutes when comments are sent to the HF Space
+        // in sequential batches (single-worker API). Use a 5-minute timeout here
+        // instead of the global 30 s default so the frontend doesn't abort early.
+        const response = await axios.get(
+            `/analysis/${formId}${params ? '?' + params : ''}`,
+            { timeout: 300000 }
+        );
         return response;
     },
 

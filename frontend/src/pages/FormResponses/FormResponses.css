@@ -764,6 +764,106 @@
     word-break: break-word;
 }
 
+/* ── Breakdown Excel Modal ───────────────────────────────────────────────── */
+
+.fr-breakdown-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 1rem;
+}
+
+.fr-breakdown-panel {
+    background: var(--fr-card, #fff);
+    border-radius: 0.875rem;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.18);
+    padding: 2rem;
+    width: 100%;
+    max-width: 440px;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.fr-breakdown-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.fr-breakdown-header h3 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--fr-text, #1a1a2e);
+    margin: 0;
+}
+
+.fr-breakdown-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.1rem;
+    color: var(--fr-text-sec, #6b7280);
+    padding: 0.25rem 0.4rem;
+    border-radius: 0.4rem;
+    line-height: 1;
+    transition: background 0.15s;
+}
+.fr-breakdown-close:hover { background: var(--fr-bg, #f3f4f6); }
+
+.fr-breakdown-desc {
+    font-size: 0.875rem;
+    color: var(--fr-text-sec, #6b7280);
+    line-height: 1.55;
+    margin: 0;
+}
+
+.fr-breakdown-select-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.fr-breakdown-select-wrap label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--fr-text-sec, #6b7280);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.fr-breakdown-select-wrap select {
+    padding: 0.6rem 0.85rem;
+    border: 1.5px solid var(--fr-border, #e5e7eb);
+    border-radius: 0.5rem;
+    font-size: 0.9rem;
+    color: var(--fr-text, #1a1a2e);
+    background: var(--fr-bg, #f9fafb);
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.fr-breakdown-select-wrap select:focus { border-color: var(--fr-primary, #667eea); }
+
+.fr-breakdown-btn {
+    padding: 0.75rem 1rem;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: #fff;
+    border: none;
+    border-radius: 0.6rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.15s;
+    text-align: center;
+}
+.fr-breakdown-btn:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+.fr-breakdown-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 
 @media (max-width: 1024px) {

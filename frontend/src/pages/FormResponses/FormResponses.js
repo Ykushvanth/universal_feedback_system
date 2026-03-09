@@ -47,6 +47,9 @@ const FormResponses = () => {
 
     const [filterFields, setFilterFields] = useState([]);
     const [filters,      setFilters]      = useState({});
+    const [breakdownOpen,   setBreakdownOpen]   = useState(false);
+    const [breakdownField,  setBreakdownField]  = useState('');
+    const [breakdownLoading, setBreakdownLoading] = useState(false);
 
     useEffect(() => { loadForm(); }, [formId]); // eslint-disable-line
 
@@ -203,6 +206,85 @@ const FormResponses = () => {
         toast.success(`Exported ${responses.length} responses to Excel`);
     };
 
+    // ── Breakdown (filter-field × all-values) Excel export ─────────────────
+    const exportBreakdownExcel = async () => {
+        if (!breakdownField) { toast.error('Please select a field'); return; }
+        setBreakdownLoading(true);
+        try {
+            // Fetch ALL responses (no filter) fresh from backend
+            const res = await responseService.getResponses(formId, {});
+            const allResponses = res.success ? (res.data.responses || []) : [];
+            if (allResponses.length === 0) { toast.error('No responses found'); return; }
+
+            // General info columns only (for follow-up purposes)
+            const headers = ['S.No', 'Submitted At', 'Name', 'Email', ...filterFields.map(f => f.label)];
+
+            const toRow = (r, i) => {
+                const d = r.general_details || {};
+                return [
+                    i + 1,
+                    r.submitted_at ? new Date(r.submitted_at).toLocaleString('en-IN') : '',
+                    d.name || d.full_name || '',
+                    d.email || '',
+                    ...filterFields.map(f => d[f.name] || '')
+                ];
+            };
+
+            const makeSheet = (rows) => {
+                const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+                ws['!cols'] = headers.map((h, i) => ({
+                    wch: i === 1 ? 20 : Math.max(h.length + 2, 16)
+                }));
+                ws['!rows'] = [{ hpt: 28 }];
+                return ws;
+            };
+
+            const wb = XLSX.utils.book_new();
+
+            // Group by chosen field value
+            const groups = {};
+            allResponses.forEach(r => {
+                const val = (r.general_details || {})[breakdownField] || '(blank)';
+                if (!groups[val]) groups[val] = [];
+                groups[val].push(r);
+            });
+
+            const fieldLabel = filterFields.find(f => f.name === breakdownField)?.label || breakdownField;
+            const sortedKeys = Object.keys(groups).sort();
+
+            // Summary sheet first
+            const summaryRows = sortedKeys.map(k => [k, groups[k].length]);
+            const summaryWs = XLSX.utils.aoa_to_sheet([
+                [`${fieldLabel} Breakdown Summary`],
+                [],
+                [fieldLabel, 'Response Count'],
+                ...summaryRows,
+                [],
+                ['TOTAL', allResponses.length]
+            ]);
+            summaryWs['!cols'] = [{ wch: 32 }, { wch: 16 }];
+            XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+
+            // One sheet per group value
+            sortedKeys.forEach(key => {
+                const groupRows = groups[key].map((r, i) => toRow(r, i));
+                const ws = makeSheet(groupRows);
+                // Sheet name max 31 chars, strip invalid chars
+                const sheetName = String(key).replace(/[/\\?*\[\]]/g, '_').slice(0, 31);
+                XLSX.utils.book_append_sheet(wb, ws, sheetName);
+            });
+
+            XLSX.writeFile(wb, `breakdown_${fieldLabel}_${form?.title || formId}_${new Date().toISOString().slice(0,10)}.xlsx`);
+            toast.success(`Exported ${sortedKeys.length} sheets for ${fieldLabel}`);
+            setBreakdownOpen(false);
+        } catch (e) {
+            console.error(e);
+            toast.error('Failed to export breakdown');
+        } finally {
+            setBreakdownLoading(false);
+        }
+    };
+
     const toggle = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
 
     const handleDeleteResponse = async (e, responseId) => {
@@ -305,6 +387,7 @@ const FormResponses = () => {
     const hasActive = Object.values(filters).some(v => v?.trim());
 
     return (
+        <>
         <div className="fr-container">
 
             {/* ── Header ── */}
@@ -339,6 +422,15 @@ const FormResponses = () => {
                             </svg>
                             Export Excel
                         </button>
+                        {filterFields.length > 0 && (
+                            <button className="fr-btn secondary" onClick={() => { setBreakdownField(''); setBreakdownOpen(true); }}>
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                                    <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+                                </svg>
+                                Export by Filter
+                            </button>
+                        )}
                         <button className="fr-btn back" onClick={() => navigate('/dashboard')}>
                             &#8592; Dashboard
                         </button>
@@ -570,6 +662,45 @@ const FormResponses = () => {
                 )}
             </main>
         </div>
+
+        {/* ── Breakdown Excel Modal ──────────────────────────────────────── */}
+        {breakdownOpen && (
+            <div className="fr-breakdown-overlay" onClick={() => setBreakdownOpen(false)}>
+                <div className="fr-breakdown-panel" onClick={e => e.stopPropagation()}>
+                    <div className="fr-breakdown-header">
+                        <h3>Export Breakdown by Filter Field</h3>
+                        <button className="fr-breakdown-close" onClick={() => setBreakdownOpen(false)}>✕</button>
+                    </div>
+                    <p className="fr-breakdown-desc">
+                        Select a filter field. The Excel file will contain a
+                        <strong> Summary</strong> sheet and one sheet per unique
+                        value of the chosen field — each sheet lists all matching
+                        responses.
+                    </p>
+                    <div className="fr-breakdown-select-wrap">
+                        <label htmlFor="bd-field-select">Filter Field</label>
+                        <select
+                            id="bd-field-select"
+                            value={breakdownField}
+                            onChange={e => setBreakdownField(e.target.value)}
+                        >
+                            <option value="">— Select a field —</option>
+                            {filterFields.map(f => (
+                                <option key={f.name} value={f.name}>{f.label}</option>
+                            ))}
+                        </select>
+                    </div>
+                    <button
+                        className="fr-breakdown-btn"
+                        onClick={exportBreakdownExcel}
+                        disabled={!breakdownField || breakdownLoading}
+                    >
+                        {breakdownLoading ? 'Generating…' : '⬇ Generate Excel Breakdown'}
+                    </button>
+                </div>
+            </div>
+        )}
+        </>
     );
 };
 

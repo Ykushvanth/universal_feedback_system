@@ -7,6 +7,11 @@ const axios = require('axios');
 const { logger } = require('../utils/logger');
 const config = require('../config/env');
 
+// Comments that look negative to the HF model due to a leading "No/Nothing/Not" but
+// are actually neutral non-responses (no feedback given).  Applied both to fresh HF
+// results AND to already-cached DB values so stale wrong entries are corrected.
+const NO_FEEDBACK_RE = /^(no[.,!\s]*$|no[\s,]*(suggestion|improvement|improvements|issue|problem|comment|thanks|all\s+good|all good|more\s+improvement|more improvement|more|nothing|not\s+at\s+all|not at all|,\s*not\s+at\s+all)[\s.]*$|no\s+(improvement|improvements|suggestion|suggestions)\s+(needed|required|necessary)[\s.]*$|not\s+needed[\s.]*$|not\s+required[\s.]*$|nothing[.,!\s]*(already\s+)?(great|good|fine|perfect|excellent|satisfied)\b.*$|i\s+have\s+no\s+(suggestion|suggestions|improvement|improvements|comment|feedback|complaint|issue|problem)[\s.,!]*$|everything\s+is\s+(great|good|fine|perfect|excellent)\b.*$|until\s+now\s+there\s+is\s+no\s+problem\b.*$|nothing\s+to\s+(improve|suggest|add|change|say|tell)[\s.]*$)/;
+
 // Default neutral result returned whenever AI analysis cannot be completed
 const neutralResult = () => ({
     sentiment: 'neutral',
@@ -63,108 +68,139 @@ class AIService {
 
         const validTexts = validEntries.map(e => e.text.trim());
 
-        // ── 3. Call HF Space with retry for cold-start ──────────────────────
-        const timeout  = config.ai?.timeout || 90000; // HF Spaces can take ~30s to wake
-        const maxRetry = 2;
-        let lastError  = null;
+        // ── 3. Call HF Space in batches of 1000 (API hard limit) ────────────
+        // FastAPI rejects requests with > max_comments_per_request (1000) texts
+        // with HTTP 422. We split into batches and merge the negative_comments_list.
+        const BATCH_SIZE = 1000;
+        const timeout    = config.ai?.timeout || 90000;
+        const maxRetry   = 2;
+        const norm       = t => String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-        for (let attempt = 1; attempt <= maxRetry; attempt++) {
-            try {
-                logger.info(`AI Service: calling HF API (attempt ${attempt}/${maxRetry}) with ${validTexts.length} comment(s)`);
+        // Helper: call the API for a single batch, returns the analysis object or null
+        const callBatch = async (batchTexts, batchIndex) => {
+            let lastErr = null;
+            for (let attempt = 1; attempt <= maxRetry; attempt++) {
+                try {
+                    logger.info(
+                        `AI Service: batch ${batchIndex + 1} — attempt ${attempt}/${maxRetry} ` +
+                        `with ${batchTexts.length} comment(s)`
+                    );
+                    const response = await axios.post(
+                        apiUrl,
+                        {
+                            comments: batchTexts,
+                            faculty_info: {
+                                faculty_name: 'Feedback Analysis',
+                                staff_id:     'N/A',
+                                course_code:  'GEN',
+                                course_name:  'General Feedback'
+                            }
+                        },
+                        { timeout, headers: { 'Content-Type': 'application/json' } }
+                    );
 
-                const response = await axios.post(
-                    apiUrl,
-                    {
-                        comments: validTexts,
-                        faculty_info: {
-                            faculty_name: 'Feedback Analysis',
-                            staff_id:     'N/A',
-                            course_code:  'GEN',
-                            course_name:  'General Feedback'
-                        }
-                    },
-                    { timeout, headers: { 'Content-Type': 'application/json' } }
-                );
+                    const apiData = response?.data;
+                    if (!apiData?.success || !apiData?.analysis) {
+                        logger.warn(`AI Service: unexpected response for batch ${batchIndex + 1}:`, JSON.stringify(apiData));
+                        return null;
+                    }
+                    return apiData.analysis;
 
-                // ── 4. Validate response ────────────────────────────────────
-                const apiData = response?.data;
-                if (!apiData?.success || !apiData?.analysis) {
-                    logger.warn('AI Service: unexpected response from HF API:', JSON.stringify(apiData));
+                } catch (err) {
+                    lastErr = err;
+                    const status  = err?.response?.status;
+                    const errMsg  = err?.response?.data?.detail ||
+                                    err?.response?.data?.message ||
+                                    err?.message || 'unknown error';
+
+                    if (status === 503 && attempt < maxRetry) {
+                        logger.warn(`AI Service: HF Space 503 on batch ${batchIndex + 1}. Retrying in 10 s…`);
+                        await new Promise(r => setTimeout(r, 10000));
+                        continue;
+                    }
+
+                    if (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT') {
+                        logger.error(`AI Service: batch ${batchIndex + 1} timed out`);
+                    } else if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
+                        logger.error(`AI Service: cannot reach HF API — ${err.code}`);
+                    } else if (status) {
+                        logger.error(`AI Service: HF API HTTP ${status} on batch ${batchIndex + 1} — ${errMsg}`);
+                    } else {
+                        logger.error(`AI Service: unexpected error on batch ${batchIndex + 1} — ${errMsg}`, err);
+                    }
                     break;
                 }
-
-                const analysis = apiData.analysis;
-
-                // Build O(1) lookup of which texts the API flagged as negative
-                const negativeSet = new Set(
-                    (analysis.negative_comments_list || []).map(t => t.trim())
-                );
-
-                // Infer what non-negatives are: positive if pos > neutral, else neutral
-                const posCount = analysis.positive_comments  || 0;
-                const neuCount = analysis.neutral_comments   || 0;
-                const nonNegSentiment = posCount >= neuCount ? 'positive' : 'neutral';
-                const nonNegConfidence = posCount >= neuCount
-                    ? (analysis.positive_sentiment || 0.7)
-                    : (analysis.neutral_sentiment  || 0.5);
-
-                // ── 5. Map back to original-text array ──────────────────────
-                const output = originalTexts.map(neutralResult);
-                validEntries.forEach(({ text, idx }) => {
-                    const trimmed  = text.trim();
-                    const isNegative = negativeSet.has(trimmed);
-                    output[idx] = {
-                        sentiment:   isNegative ? 'negative' : nonNegSentiment,
-                        confidence:  isNegative
-                            ? (analysis.negative_sentiment || 0.85)
-                            : nonNegConfidence,
-                        vader_score: 0,
-                        roberta_scores:  { negative: 0, neutral: 0, positive: 0 },
-                        pattern_matched: false,
-                        pattern_type:    null,
-                        ai_analyzed:     true
-                    };
-                });
-
-                logger.info(
-                    `AI Service: analysis done — ` +
-                    `${analysis.negative_comments || 0} negative, ` +
-                    `${posCount} positive, ${neuCount} neutral. ` +
-                    `Overall: ${analysis.overall_sentiment}`
-                );
-                return output;
-
-            } catch (err) {
-                lastError = err;
-                const status = err?.response?.status;
-                const errMsg = err?.response?.data?.detail ||
-                               err?.response?.data?.message ||
-                               err?.message || 'unknown error';
-
-                if (status === 503 && attempt < maxRetry) {
-                    logger.warn(`AI Service: HF Space returned 503 (cold start). Retrying in 10 s…`);
-                    await new Promise(r => setTimeout(r, 10000));
-                    continue;
-                }
-
-                if (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT') {
-                    logger.error(`AI Service: request timed out after ${timeout}ms — "${apiUrl}"`);
-                } else if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
-                    logger.error(`AI Service: cannot reach HF API at "${apiUrl}" — ${err.code}`);
-                } else if (status) {
-                    logger.error(`AI Service: HF API returned HTTP ${status} — ${errMsg}`);
-                } else {
-                    logger.error(`AI Service: unexpected error — ${errMsg}`, err);
-                }
-
-                break;
             }
+            if (lastErr) logger.warn(`AI Service: batch ${batchIndex + 1} failed; will use neutral defaults for this batch`);
+            return null;
+        };
+
+        // Split validTexts into chunks and call API for each
+        const batches = [];
+        for (let i = 0; i < validTexts.length; i += BATCH_SIZE) {
+            batches.push(validTexts.slice(i, i + BATCH_SIZE));
         }
 
-        if (lastError) {
-            logger.warn('AI Service: all attempts failed. Returning neutral defaults so submission is unaffected.');
+        logger.info(`AI Service: ${validTexts.length} comment(s) → ${batches.length} batch(es) of ≤ ${BATCH_SIZE} (sequential)`);
+
+        // Sequential — HF Space is single-worker; parallel requests queue up and
+        // cause all but the first to time out waiting in line.
+        const batchResults = [];
+        for (let i = 0; i < batches.length; i++) {
+            batchResults.push(await callBatch(batches[i], i));
         }
-        return originalTexts.map(neutralResult);
+
+        // Merge: collect all negative comments across batches; aggregate counts
+        const mergedNegativeSet = new Set();
+        let totalPos = 0, totalNeg = 0, totalNeu = 0;
+        let posSentScore = 0, negSentScore = 0, neuSentScore = 0;
+        let validBatches = 0;
+
+        batchResults.forEach(analysis => {
+            if (!analysis) return;
+            validBatches++;
+            (analysis.negative_comments_list || []).forEach(t => mergedNegativeSet.add(norm(t)));
+            totalPos += analysis.positive_comments || 0;
+            totalNeg += analysis.negative_comments || 0;
+            totalNeu += analysis.neutral_comments  || 0;
+            posSentScore += analysis.positive_sentiment || 0;
+            negSentScore += analysis.negative_sentiment || 0;
+            neuSentScore += analysis.neutral_sentiment  || 0;
+        });
+
+        if (validBatches === 0) {
+            logger.warn('AI Service: all batches failed. Returning neutral defaults.');
+            return originalTexts.map(neutralResult);
+        }
+
+        const avgPosSent = posSentScore / validBatches;
+        const avgNegSent = negSentScore / validBatches;
+        const avgNeuSent = neuSentScore / validBatches;
+        const nonNegSentiment  = totalPos >= totalNeu ? 'positive' : 'neutral';
+        const nonNegConfidence = totalPos >= totalNeu ? avgPosSent || 0.7 : avgNeuSent || 0.5;
+
+        // ── 4. Map back to original-text array ──────────────────────────────
+        // NO_FEEDBACK_RE (module-level) overrides wrongly-flagged neutral non-responses.
+        const output = originalTexts.map(neutralResult);
+        validEntries.forEach(({ text, idx }) => {
+            const normalizedText = norm(text);
+            const isNegative = mergedNegativeSet.has(normalizedText) && !NO_FEEDBACK_RE.test(normalizedText);
+            output[idx] = {
+                sentiment:       isNegative ? 'negative' : nonNegSentiment,
+                confidence:      isNegative ? (avgNegSent || 0.85) : nonNegConfidence,
+                vader_score:     0,
+                roberta_scores:  { negative: 0, neutral: 0, positive: 0 },
+                pattern_matched: false,
+                pattern_type:    null,
+                ai_analyzed:     true
+            };
+        });
+
+        logger.info(
+            `AI Service: merged ${batches.length} batch(es) — ` +
+            `${totalNeg} negative, ${totalPos} positive, ${totalNeu} neutral.`
+        );
+        return output;
     }
 
     /**
@@ -175,12 +211,17 @@ class AIService {
     static async analyzeResponseComments(responses) {
         try {
             if (!Array.isArray(responses) || responses.length === 0) {
-                return { analyses: [], summary: this.getEmptySummary() };
+                return { analyses: [], summary: this.getEmptySummary(), newAnalyses: [] };
             }
 
-            // Extract all text comments from responses
-            const comments = [];
-            const commentMapping = [];
+            // Separate comments that already have a stored AI result from ones that need
+            // a fresh HF API call.  On the first analysis run every comment is sent to the
+            // API; results are written back to the DB (see analysisService).  On every
+            // subsequent run the stored values are reused instantly — only new submissions
+            // (ai_analyzed === false) are sent to the API.
+            const cachedAnalyses  = [];
+            const newComments     = [];
+            const newCommentMappings = [];
 
             responses.forEach((response, responseIndex) => {
                 if (!response.answers || !Array.isArray(response.answers)) return;
@@ -191,44 +232,77 @@ class AIService {
                         typeof answer.value === 'string' &&
                         answer.value.trim().length > 0
                     ) {
-                        comments.push(answer.value.trim());
-                        commentMapping.push({
+                        const mapping = {
                             responseIndex,
                             answerIndex,
                             responseId: response.response_id,
                             questionId: answer.question_id
-                        });
+                        };
+
+                        if (answer.ai_analyzed === true) {
+                            // Reuse the stored result — but re-apply NO_FEEDBACK_RE so any
+                            // comments that were wrongly stored as "negative" before the
+                            // pattern fix are corrected on the fly without re-calling the API.
+                            const normVal = String(answer.value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+                            const storedSentiment = (answer.sentiment || 'neutral') === 'negative' && NO_FEEDBACK_RE.test(normVal)
+                                ? 'neutral'
+                                : (answer.sentiment || 'neutral');
+                            cachedAnalyses.push({
+                                ...mapping,
+                                comment:        answer.value.trim(),
+                                sentiment:      storedSentiment,
+                                confidence:     answer.sentiment_confidence ?? 0,
+                                vader_score:    0,
+                                roberta_scores: { negative: 0, neutral: 1, positive: 0 },
+                                pattern_matched: false,
+                                pattern_type:   null,
+                                ai_analyzed:    true
+                            });
+                        } else {
+                            newComments.push(answer.value.trim());
+                            newCommentMappings.push(mapping);
+                        }
                     }
                 });
             });
 
-            if (comments.length === 0) {
+            const totalComments = cachedAnalyses.length + newComments.length;
+            if (totalComments === 0) {
                 logger.info('AI Service: no text comments found in responses');
-                return { analyses: [], summary: this.getEmptySummary() };
+                return { analyses: [], summary: this.getEmptySummary(), newAnalyses: [] };
             }
 
-            logger.info(`AI Service: analysing ${comments.length} comment(s) from ${responses.length} response(s)`);
+            if (newComments.length === 0) {
+                logger.info(`AI Service: all ${cachedAnalyses.length} comment(s) already analyzed — skipping HF API call`);
+                const summary = this.generateSummary(cachedAnalyses);
+                return { analyses: cachedAnalyses, summary, newAnalyses: [] };
+            }
+
+            logger.info(
+                `AI Service: ${newComments.length} new comment(s) to analyze ` +
+                `(${cachedAnalyses.length} already cached) from ${responses.length} response(s)`
+            );
 
             // analyzeSentiment never throws — always returns an array
-            const sentiments = await this.analyzeSentiment(comments);
+            const sentiments = await this.analyzeSentiment(newComments);
 
-            // Map sentiments back to responses
-            const analyses = sentiments.map((sentiment, index) => {
-                const mapping = commentMapping[index];
+            const newAnalyses = sentiments.map((sentiment, index) => {
+                const mapping = newCommentMappings[index];
                 if (!mapping) return null;
                 return {
                     ...mapping,
-                    comment: comments[index],
+                    comment: newComments[index],
                     ...sentiment
                 };
             }).filter(Boolean);
 
-            const summary = this.generateSummary(analyses);
+            const allAnalyses = [...cachedAnalyses, ...newAnalyses];
+            const summary = this.generateSummary(allAnalyses);
 
-            return { analyses, summary };
+            return { analyses: allAnalyses, summary, newAnalyses };
         } catch (error) {
             logger.error('AI Service: analyzeResponseComments failed unexpectedly:', error);
-            return { analyses: [], summary: this.getEmptySummary() };
+            return { analyses: [], summary: this.getEmptySummary(), newAnalyses: [] };
         }
     }
 
